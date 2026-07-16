@@ -42,7 +42,8 @@ Full skill definition, scripts, and references are in [SKILL.md](./SKILL.md). Se
 ## Files
 
 - `SKILL.md` — Full skill definition (agentskills.io format)
-- `scripts/format_paper.py` — Main formatting script with CLI
+- `scripts/format_paper.py` — Main formatting script with CLI (排版+引注)
+- `scripts/citation_formatter.py` — Citation format checker/fixer (法学引注手册)
 - `scripts/run_pipeline.py` — Single-command orchestrator
 - `references/formatting-rules.md` — Detailed formatting rule reference
 - `requirements.txt` — Python dependencies

@@ -4,7 +4,8 @@ description: >-
   将中文论文 .docx 文件按学术排版规范自动格式化。处理论文题目(黑体四号居中)、
   一级标题"一、"(宋体小四加粗居中)、二级标题"（一）"(楷体小四加粗缩进)、
   三级标题"1. "(宋体五号加粗缩进)、正文(宋体/Times New Roman五号单倍行距)、
-  页下脚注(宋体小五号每页重新编号)。当用户说"修改论文格式"、"使用修改论文格式skill"、
+  页下脚注(宋体小五号每页重新编号)、引注格式规范化(依据《法学引注手册》2019)。
+  当用户说"修改论文格式"、"使用修改论文格式skill"、
   "论文格式修改"、"用论文格式化技能"、"帮我调整论文排版"、"格式化这篇论文"、
   "把论文排版改成学术规范"、"论文排版规范化"、"统一论文格式"、"docx论文格式调整"
   或任何与论文格式修改相关的请求时激活此技能。
@@ -102,6 +103,38 @@ python scripts/format_paper.py 文件夹/ --batch --body-indent 2
 
 ```bash
 python scripts/format_paper.py 文件.docx --check
+```
+
+### 4. 引注格式检查与修复
+
+依据《法学引注手册》(2019) 规范，自动检查和修复脚注中的引注格式问题：
+
+```bash
+# 仅检查引注格式 (不改动)
+python scripts/format_paper.py 论文.docx --check-citations
+
+# 自动修复引注格式问题
+python scripts/format_paper.py 论文.docx --fix-citations -o 输出.docx
+
+# 完整处理: 排版格式化 + 引注修复
+python scripts/format_paper.py 论文.docx --body-indent 2 --fix-citations -o 输出.docx
+```
+
+引注格式化涵盖:
+- 中英文标点混用 → 统一为中文标点 (，、：；。)
+- 作者名后逗号 → 改为冒号
+- 英文页码格式 p.xx → 第xx页
+- 出版社格式补全 (加"年版")
+- "载"字缺失检测
+- 书名号缺失检测
+
+### 5. 独立引注检查工具
+
+也可以单独使用引注格式化脚本：
+
+```bash
+python scripts/citation_formatter.py 论文.docx --check
+python scripts/citation_formatter.py 论文.docx --fix -o 输出.docx
 ```
 
 ## 自动检测机制

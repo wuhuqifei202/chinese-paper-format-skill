@@ -31,6 +31,14 @@ from docx.oxml.ns import qn, nsdecls
 from docx.oxml import parse_xml
 from docx.shared import Pt
 
+# 引注格式化模块 (可选导入)
+try:
+    from citation_formatter import (extract_footnotes, check_footnote,
+                                     format_all_footnotes)
+    _HAS_CITATION = True
+except ImportError:
+    _HAS_CITATION = False
+
 # ---------------------------------------------------------------------------
 # 字号常量 (单位: Pt)
 # ---------------------------------------------------------------------------
@@ -201,8 +209,19 @@ def clear_paragraph_runs(para):
         para._p.append(r)
 
 
-def _get_footnotes_part(doc) -> Optional[object]:
-    """获取文档的脚注 XML Part, 无脚注时返回 None."""
+def _get_footnotes_xml(doc) -> Optional[object]:
+    """获取文档的脚注 XML 根元素."""
+    FOOTNOTE_REL = ('http://schemas.openxmlformats.org/officeDocument/'
+                    '2006/relationships/footnotes')
+    for rel in doc.part.rels.values():
+        if rel.reltype == FOOTNOTE_REL:
+            from lxml import etree
+            return etree.fromstring(rel.target_part.blob)
+    return None
+
+
+def _get_footnotes_part_obj(doc):
+    """获取脚注 Part 对象 (用于写回 blob)."""
     FOOTNOTE_REL = ('http://schemas.openxmlformats.org/officeDocument/'
                     '2006/relationships/footnotes')
     for rel in doc.part.rels.values():
@@ -213,11 +232,10 @@ def _get_footnotes_part(doc) -> Optional[object]:
 
 def format_footnotes(doc):
     """格式化现有脚注: 宋体小五号, 单倍行距, 每页重新编号, 数字编号."""
-    fn_part = _get_footnotes_part(doc)
-    if fn_part is None:
+    fn_xml = _get_footnotes_xml(doc)
+    fn_part_obj = _get_footnotes_part_obj(doc)
+    if fn_xml is None:
         return  # 文档无脚注
-
-    fn_xml = fn_part._element
 
     # 1) 设置脚注属性: 每页重新编号, 编号格式为 1,2,3...
     fn_pr = fn_xml.find(qn('w:footnotePr'))
@@ -257,6 +275,12 @@ def format_footnotes(doc):
 
         for p_elem in fn_elem.findall(qn('w:p')):
             _format_footnote_paragraph(p_elem)
+
+    # 将修改写回 Part blob
+    if fn_part_obj is not None:
+        from lxml import etree as _etree
+        fn_part_obj._blob = _etree.tostring(
+            fn_xml, xml_declaration=True, encoding='UTF-8', standalone=True)
 
 
 def _format_footnote_paragraph(p_elem):
@@ -441,9 +465,9 @@ def format_document(input_path: str, output_path: str,
 
     # —— 格式化脚注 ——
     try:
-        fn_part = _get_footnotes_part(doc)
-        if fn_part is not None:
-            fn_count = len([e for e in fn_part._element.findall(qn('w:footnote'))
+        fn_xml = _get_footnotes_xml(doc)
+        if fn_xml is not None:
+            fn_count = len([e for e in fn_xml.findall(qn('w:footnote'))
                            if e.get(qn('w:id')) and int(e.get(qn('w:id'))) > 0])
             stats['footnotes'] = fn_count
             format_footnotes(doc)
@@ -486,7 +510,7 @@ def check_document(input_path: str) -> dict:
         if level > 0:
             result['headings'].append((level, text[:60]))
 
-    result['has_footnotes'] = _get_footnotes_part(doc) is not None
+    result['has_footnotes'] = _get_footnotes_xml(doc) is not None
     return result
 
 
@@ -529,6 +553,10 @@ def main():
                         help='检查依赖和环境')
     parser.add_argument('--diagnostics', action='store_true',
                         help='输出技能元数据')
+    parser.add_argument('--fix-citations', action='store_true',
+                        help='自动修复脚注中的引注格式 (依据《法学引注手册》)')
+    parser.add_argument('--check-citations', action='store_true',
+                        help='仅检查脚注引注格式, 不修改')
 
     args = parser.parse_args()
 
@@ -629,6 +657,14 @@ def main():
                 stats = format_document(str(f), str(f),
                                         body_indent=args.body_indent)
                 _print_stats(stats)
+
+                if args.fix_citations and _HAS_CITATION:
+                    doc = Document(str(f))
+                    cstats = format_all_footnotes(doc, fix=True)
+                    doc.save(str(f))
+                    if cstats['fixed'] > 0:
+                        print(f"    引注修复: {cstats['fixed']} 处")
+
                 total_stats['ok'] += 1
             except Exception as e:
                 print(f"  ✗ {f.name}: {e}")
@@ -680,12 +716,51 @@ def main():
                                 body_indent=args.body_indent)
         print(f"输出: {output_path}")
         _print_stats(stats)
+
+        # —— 引注格式检查和修复 ——
+        if args.check_citations or args.fix_citations:
+            if not _HAS_CITATION:
+                print("\n⚠ 引注格式化模块未找到, 请确保 citation_formatter.py 在同一目录")
+            else:
+                _run_citation_checks(output_path, fix=args.fix_citations)
+
         print("✓ 完成")
     except Exception as e:
         print(f'{{"error": "{e}", "error_type": "runtime", '
               f'"hint": "格式化过程中出现错误, 请检查文档是否损坏"}}',
               file=sys.stderr)
         sys.exit(1)
+
+
+def _run_citation_checks(filepath: str, fix: bool = False):
+    """运行引注格式检查/修复."""
+    doc = Document(filepath)
+    if fix:
+        print("\n🔧 修复引注格式...")
+        cstats = format_all_footnotes(doc, fix=True)
+        doc.save(filepath)
+        print(f"  检查脚注: {cstats['total']} 条")
+        print(f"  发现问题: {cstats['issues']} 个")
+        print(f"  自动修复: {cstats['fixed']} 处")
+        unfixed = cstats['issues'] - cstats['fixed']
+        if unfixed > 0:
+            print(f"  ⚠ {unfixed} 个问题需手动处理")
+    else:
+        print("\n📋 检查引注格式...")
+        footnotes = extract_footnotes(doc)
+        total_issues = 0
+        for fn in footnotes:
+            issues = check_footnote(fn['full_text'])
+            total_issues += len(issues)
+            if issues:
+                print(f"  [脚注 {fn['id']}] {fn['full_text'][:60]}...")
+                for iss in issues:
+                    sev = {'high': '🔴', 'medium': '🟡', 'low': '🟢', 'info': 'ℹ️'}
+                    print(f"    {sev.get(iss['severity'], '  ')} {iss['message']}")
+        if total_issues == 0:
+            print("  ✓ 引注格式正常")
+        else:
+            print(f"  共 {total_issues} 个问题，运行 --fix-citations 自动修复")
 
 
 def _print_stats(stats: dict):

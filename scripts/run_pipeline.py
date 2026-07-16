@@ -61,12 +61,28 @@ def main():
                     help='正文首行缩进字符数 (默认 2)')
     ap.add_argument('--no-check', action='store_true',
                     help='跳过格式检查步骤')
+    ap.add_argument('--fix-citations', action='store_true',
+                    help='自动修复脚注引注格式')
     args = ap.parse_args()
 
     output = args.output or args.input
     stats = run_pipeline(args.input, output,
                          body_indent=args.body_indent,
                          check_first=not args.no_check)
+
+    # Citation formatting
+    if args.fix_citations:
+        try:
+            from citation_formatter import format_all_footnotes
+            from docx import Document
+            doc = Document(output)
+            cstats = format_all_footnotes(doc, fix=True)
+            doc.save(output)
+            if cstats['fixed'] > 0:
+                stats['citation_fixes'] = cstats['fixed']
+                stats['citation_issues'] = cstats['issues']
+        except ImportError:
+            print("⚠ citation_formatter 模块未找到")
 
     # Print summary
     parts = []
@@ -75,6 +91,8 @@ def main():
                      ('body', '正文段落'), ('footnotes', '脚注')]:
         if stats.get(k):
             parts.append(f"{label}: {stats[k]}")
+    if stats.get('citation_fixes'):
+        parts.append(f"引注修复: {stats['citation_fixes']}处")
     print(f"✓ 完成 — {' | '.join(parts)}")
 
 
