@@ -93,6 +93,61 @@ _RE_PAGE = re.compile(r'第\s*(\d+(?:[-–—]\d+)?)\s*页')
 # 引领词
 _LEADING_WORDS = ['参见', '见', '又见', '另见', '转引自', '同上注', '同前注']
 
+# —— 法律文件引用检测 ——
+
+# 规范性文件: 制定机关《名称》，文号
+_RE_NORMATIVE_DOC = re.compile(
+    r'([一-鿿]+(?:[部委局办院署会])?)\s*《([^》]+)》\s*[,，]\s*'
+    r'([一-鿿A-Za-z]+[〔\[发]?\s*[〔\[]?\d{4}[〕\]]?\s*\]?\d+\s*号)'
+)
+
+# 文号中的方括号错误: 国发[2007]19号 → 应为六角括号
+_RE_WRONG_BRACKET = re.compile(
+    r'([一-鿿A-Za-z]+[发字]?)\s*\[\s*(\d{4})\s*\]\s*(\d+\s*号)'
+)
+
+# 文号中缺六角括号: 国发2007 19号
+_RE_MISSING_BRACKET = re.compile(
+    r'([一-鿿A-Za-z]+[发字]?)\s*(\d{4})\s+(\d+\s*号)'
+)
+
+# 法律条文引用: 《法律名称》第×条
+_RE_LEGAL_ARTICLE = re.compile(
+    r'《([^》]+)》\s*第\s*\d+\s*条'
+)
+
+# 法规引用: 制定机关《法规名称》（年份）
+_RE_REGULATION = re.compile(
+    r'([一-鿿]+(?:[部委局办院署会]))\s*《([^》]+)》\s*[（(]\s*(\d{4})\s*[）)]'
+)
+
+# —— 案例引用检测 ——
+
+# 案例名称: ×××诉××××××案
+_RE_CASE_NAME = re.compile(
+    r'([一-鿿A-Za-z（）()]+(?:诉|与)\s*[一-鿿A-Za-z（）()]+[\s\w]*?案)'
+)
+
+# 案号: 法院名称文书名称，（年份）案号
+_RE_CASE_NUMBER = re.compile(
+    r'[（(]\s*(\d{4})\s*[）)]\s*[一-鿿A-Za-z0-9]+(?:字第?)?\d+\s*号'
+)
+
+# 指导案例: 最高人民法院指导案例×号（年份）
+_RE_GUIDING_CASE = re.compile(
+    r'(?:最高人民法院|最高人民检察院)\s*指导[性案]例\s*\d+\s*号'
+)
+
+# 案号中方括号错误: [1998]海行初字第142号 → (1998)
+_RE_CASE_BRACKET = re.compile(
+    r'[\[【]\s*(\d{4})\s*[\]】]\s*([一-鿿A-Za-z0-9]+(?:字第?)?\d+\s*号)'
+)
+
+# "字第" 冗余: （1998）海行初字第142号 → 规范写法保留"字"在旧案号
+# 旧案号保留"字", 新案号不写"字" (已由最高人民法院规范)
+# 检测旧案号中的"字" (信息性提示)
+_RE_OLD_CASE_NUMBER = re.compile(r'字第\d+\s*号')
+
 # 常见错误模式
 _ERROR_PATTERNS = [
     # 1. 作者名后逗号+书名号 → 冒号+书名号 (如 "王利明, 《" → "王利明：《")
@@ -118,6 +173,18 @@ _ERROR_PATTERNS = [
     # 6. 多余空格
     (re.compile(r'([，。：；、》）])\s+'), r'\1'),
     (re.compile(r'\s+([，。：；、《（])'), r'\1'),
+
+    # 7. 文号方括号 → 六角括号: 国发[2007]19号 → 国发〔2007〕19号
+    (re.compile(r'(国发|法释|法发|法〔[^〕]+〕|[一-鿿]+[发字])\s*\[\s*(\d{4})\s*\]\s*(\d+\s*号)'),
+     r'\1〔\2〕\3'),
+
+    # 8. 案号年份方括号 → 圆括号: [1998]→(1998)
+    (re.compile(r'[\[【]\s*(\d{4})\s*[\]】]\s*([一-鿿A-Za-z].+?号)'),
+     r'（\1）\2'),
+
+    # 9. 案号缺少年份括号: 1998 海行初字 → (1998)海行初字
+    (re.compile(r'(?<=\s)(\d{4})\s+([一-鿿][一-鿿A-Za-z]+(?:字第?)?\d+\s*号)'),
+     r'（\1）\2'),
 ]
 
 
@@ -203,6 +270,12 @@ def check_footnote(fn_text: str) -> List[Dict]:
 
     # 9. 检查出版社格式
     _check_publisher_format(fn_text, issues)
+
+    # 10. 检查法律文件引用格式
+    _check_legal_doc_format(fn_text, issues)
+
+    # 11. 检查案例引用格式
+    _check_case_citation(fn_text, issues)
 
     return issues
 
@@ -381,6 +454,107 @@ def _check_publisher_format(text: str, issues: List[Dict]):
             'suggestion': f'只写"{city_pub.group(2)}"，不写城市名',
             'context': text[:80],
         })
+
+
+def _check_legal_doc_format(text: str, issues: List[Dict]):
+    """检测法律文件引用格式问题."""
+    # 1. 文号方括号 → 六角括号: 国发[2007]19号 → 国发〔2007〕19号
+    bracket_matches = _RE_WRONG_BRACKET.findall(text)
+    for m in bracket_matches:
+        wrong = f'{m[0]}[{m[1]}]{m[2]}'
+        correct = f'{m[0]}〔{m[1]}〕{m[2]}'
+        issues.append({
+            'type': 'legal_bracket',
+            'severity': 'high',
+            'message': f'文号使用了方括号而非六角括号: {wrong}',
+            'suggestion': f'应为: {correct}',
+            'context': text[:80],
+        })
+
+    # 2. 文号缺少括号: 国发2007 19号 → 国发〔2007〕19号
+    if not bracket_matches:
+        missing = _RE_MISSING_BRACKET.findall(text)
+        for m in missing:
+            wrong = f'{m[0]}{m[1]} {m[2]}'
+            correct = f'{m[0]}〔{m[1]}〕{m[2]}'
+            issues.append({
+                'type': 'legal_bracket',
+                'severity': 'high',
+                'message': f'文号缺少年份括号: {wrong}',
+                'suggestion': f'应为: {correct}',
+                'context': text[:80],
+            })
+
+    # 3. 法规缺少制定机关和年份
+    law_match = _RE_LEGAL_ARTICLE.search(text)
+    if law_match:
+        law_name = law_match.group(1)
+        # 检测是否为法规（非法律）但未写制定机关
+        reg_keywords = ['条例', '办法', '规定', '细则', '通知', '意见']
+        if any(kw in law_name for kw in reg_keywords):
+            if not _RE_REGULATION.search(text):
+                issues.append({
+                    'type': 'legal_doc',
+                    'severity': 'info',
+                    'message': f'法规/规章引用建议标明制定机关和年份: {law_name}',
+                    'suggestion': '参照手册第63条格式: 制定机关《法规名称》（年份）',
+                    'context': text[:80],
+                })
+
+
+def _check_case_citation(text: str, issues: List[Dict]):
+    """检测案例引用格式问题."""
+    # 1. 案号年份方括号 → 圆括号: [1998]海行初字第142号 → (1998)
+    case_brackets = _RE_CASE_BRACKET.findall(text)
+    for year, rest in case_brackets:
+        wrong = f'[{year}]{rest}'
+        correct = f'（{year}）{rest}'
+        issues.append({
+            'type': 'case_bracket',
+            'severity': 'high',
+            'message': f'案号年份应使用圆括号而非方括号: {wrong}',
+            'suggestion': f'应为: {correct}',
+            'context': text[:80],
+        })
+
+    # 2. 指导案例格式检查
+    guiding = _RE_GUIDING_CASE.search(text)
+    if guiding:
+        # 检查是否有发布年份括号
+        if not re.search(r'指导[性案]例\s*\d+\s*号\s*[（(]\s*\d{4}\s*[）)]', text):
+            issues.append({
+                'type': 'case_format',
+                'severity': 'medium',
+                'message': '指导案例建议用括号标注发布年份',
+                'suggestion': '格式: 最高人民法院指导案例24号（2014年）',
+                'context': text[:80],
+            })
+
+    # 3. 案例名称缺少"案"字
+    case_match = _RE_CASE_NAME.search(text)
+    if case_match:
+        case_name = case_match.group(1)
+        if not case_name.endswith('案'):
+            issues.append({
+                'type': 'case_format',
+                'severity': 'low',
+                'message': f'案例名称建议以"案"字结尾: {case_name[:40]}',
+                'suggestion': '民事/行政案例格式: ×××诉××××××案',
+                'context': text[:80],
+            })
+
+    # 4. 《最高人民法院公报》案例
+    gazette = re.search(r'《最高人民法院公报》', text)
+    if gazette:
+        # 应有年份和期号
+        if not re.search(r'《最高人民法院公报》\s*\d{4}\s*年\s*第\s*\d+\s*期', text):
+            issues.append({
+                'type': 'case_format',
+                'severity': 'medium',
+                'message': '《最高人民法院公报》案例缺少年份和期号',
+                'suggestion': '格式: 《最高人民法院公报》2015年第11期',
+                'context': text[:80],
+            })
 
 
 def auto_fix_footnote(text: str) -> Tuple[str, int]:
