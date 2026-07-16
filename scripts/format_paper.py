@@ -70,6 +70,25 @@ _RE_LEVEL3 = re.compile(r'^\d{1,3}[\.、．]\s')
 # 疑似三级标题但后面没有空格的情况 (1.xxx → 可能是序号)
 _RE_LEVEL3_LOOSE = re.compile(r'^\d{1,3}[\.、．]\S')
 
+# 摘要/关键词检测
+_RE_ABSTRACT = re.compile(r'^[【\[]\s*摘\s*要\s*[】\]]|^摘要[：:)]|^摘要\b')
+_RE_KEYWORDS = re.compile(r'^[【\[]\s*关\s*键\s*词\s*[】\]]|^关键词[：:)]|^关键词\b')
+
+
+def is_abstract_or_keywords(text: str) -> Optional[str]:
+    """检测段落是否为摘要或关键词.
+
+    Returns:
+        'abstract' — 摘要段落
+        'keywords' — 关键词段落
+        None — 都不是
+    """
+    if _RE_ABSTRACT.match(text):
+        return 'abstract'
+    if _RE_KEYWORDS.match(text):
+        return 'keywords'
+    return None
+
 # ---------------------------------------------------------------------------
 # 最大标题长度 (字符) — 超过此长度的行不太可能是标题
 # ---------------------------------------------------------------------------
@@ -383,7 +402,8 @@ def format_document(input_path: str, output_path: str,
                         body, footnotes, errors}
     """
     stats = {
-        'title': 0, 'headings_l1': 0, 'headings_l2': 0,
+        'title': 0, 'abstract': 0, 'keywords': 0,
+        'headings_l1': 0, 'headings_l2': 0,
         'headings_l3': 0, 'body': 0, 'footnotes': 0, 'errors': 0,
     }
 
@@ -412,14 +432,45 @@ def format_document(input_path: str, output_path: str,
         # 题目区域
         if i in title_indices:
             is_first_title = (i == title_start)
-            set_alignment(para, WD_ALIGN_PARAGRAPH.CENTER)
-            set_line_spacing(para)
-            remove_first_line_indent(para)
-            for run in para.runs:
-                apply_run_font(run, FONT_HEI, FONT_TNR,
-                              SIZE_SIHAO, bold=False)
+            ak_type = is_abstract_or_keywords(text)
+
             if is_first_title:
+                # 论文题目: 黑体 四号 居中
+                set_alignment(para, WD_ALIGN_PARAGRAPH.CENTER)
+                set_line_spacing(para)
+                remove_first_line_indent(para)
+                for run in para.runs:
+                    apply_run_font(run, FONT_HEI, FONT_TNR,
+                                  SIZE_SIHAO, bold=False)
                 stats['title'] += 1
+            elif ak_type == 'abstract':
+                # 摘要: 楷体 小四 单倍行距
+                set_alignment(para, WD_ALIGN_PARAGRAPH.LEFT)
+                set_line_spacing(para)
+                set_first_line_indent(para, chars=2)
+                for run in para.runs:
+                    apply_run_font(run, FONT_KAI, FONT_TNR,
+                                  SIZE_XIAOSI, bold=False)
+                stats.setdefault('abstract', 0)
+                stats['abstract'] += 1
+            elif ak_type == 'keywords':
+                # 关键词: 楷体 小四 单倍行距
+                set_alignment(para, WD_ALIGN_PARAGRAPH.LEFT)
+                set_line_spacing(para)
+                set_first_line_indent(para, chars=2)
+                for run in para.runs:
+                    apply_run_font(run, FONT_KAI, FONT_TNR,
+                                  SIZE_XIAOSI, bold=False)
+                stats.setdefault('keywords', 0)
+                stats['keywords'] += 1
+            else:
+                # 其他标题区域内容 (作者名等): 保持黑体四号居中
+                set_alignment(para, WD_ALIGN_PARAGRAPH.CENTER)
+                set_line_spacing(para)
+                remove_first_line_indent(para)
+                for run in para.runs:
+                    apply_run_font(run, FONT_HEI, FONT_TNR,
+                                  SIZE_SIHAO, bold=False)
             continue
 
         # 标题 / 正文
@@ -768,6 +819,10 @@ def _print_stats(stats: dict):
     parts = []
     if stats.get('title'):
         parts.append(f"题目: {stats['title']}")
+    if stats.get('abstract'):
+        parts.append(f"摘要: {stats['abstract']}")
+    if stats.get('keywords'):
+        parts.append(f"关键词: {stats['keywords']}")
     if stats.get('headings_l1'):
         parts.append(f"一级标题: {stats['headings_l1']}")
     if stats.get('headings_l2'):
