@@ -604,6 +604,84 @@ def _get_footnotes_part(doc):
     return None
 
 
+def _write_footnote_part(fn_part, fn_xml) -> None:
+    """将修改后的脚注 XML 写回 Part 对象.
+
+    优先使用 Part._blob (python-docx 0.8.x ~ 1.x 一直稳定).
+    若 _blob 不可用, 抛出 RuntimeError 并提示降级方案.
+
+    Raises:
+        RuntimeError: _blob 不可用且所有降级方案均失败.
+    """
+    try:
+        from lxml import etree
+        fn_part._blob = etree.tostring(
+            fn_xml, xml_declaration=True, encoding='UTF-8', standalone=True)
+    except AttributeError:
+        import docx
+        raise RuntimeError(
+            f"脚注写入失败: python-docx Part._blob 不可用.\n"
+            f"  python-docx 版本: {docx.__version__}\n"
+            f"  降级方案: 文档保存后可运行 "
+            f"python citation_formatter.py <文件> --fix-via-zip"
+        ) from None
+
+
+def write_footnotes_via_zipfile(docx_path: str) -> bool:
+    """降级方案: 通过 ZIP 直操作修改已保存文档的 word/footnotes.xml.
+
+    当 Part._blob 不可用时, 用此函数直接替换 ZIP 中的脚注 XML.
+    先调用 format_all_footnotes 修复, 再重新读取修复后的 XML 写入 ZIP.
+
+    Args:
+        docx_path: 已保存的 .docx 文件路径.
+
+    Returns:
+        True 表示成功写入, False 表示文档中没有脚注.
+    """
+    import zipfile
+    from lxml import etree
+    from docx import Document
+
+    # 1. 检查文档是否有脚注
+    doc_check = Document(docx_path)
+    if _get_footnotes_xml(doc_check) is None:
+        return False
+
+    # 2. 修复脚注 (format_all_footnotes 会修改内存中的 XML)
+    #    然后从 Part._blob 重新解析得到修复后的 XML
+    doc_fix = Document(docx_path)
+    fn_xml_before = _get_footnotes_xml(doc_fix)
+    if fn_xml_before is None:
+        return False
+
+    stats = format_all_footnotes(doc_fix, fix=True)
+    if stats.get('write_error') or stats['fixed'] == 0:
+        return False
+
+    # 3. 从修复后的 Part._blob 重新解析 (避免拿到旧的 XML 引用)
+    fn_xml_fixed = _get_footnotes_xml(doc_fix)
+    if fn_xml_fixed is None:
+        return False
+
+    new_xml_bytes = etree.tostring(
+        fn_xml_fixed, xml_declaration=True, encoding='UTF-8', standalone=True)
+
+    # 4. ZIP 替换
+    tmp_path = docx_path + '.tmp'
+    with zipfile.ZipFile(docx_path, 'r') as zin:
+        with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                if item.filename == 'word/footnotes.xml':
+                    zout.writestr(item, new_xml_bytes)
+                else:
+                    zout.writestr(item, zin.read(item.filename))
+
+    import os
+    os.replace(tmp_path, docx_path)
+    return True
+
+
 def format_all_footnotes(doc: Document, fix: bool = True) -> Dict:
     """格式化文档中所有脚注的引注内容."""
     fn_xml = _get_footnotes_xml(doc)
@@ -683,9 +761,11 @@ def format_all_footnotes(doc: Document, fix: bool = True) -> Dict:
 
     # Write modified XML back to part
     if fix and stats['fixed'] > 0 and fn_part is not None:
-        from lxml import etree
-        fn_part._blob = etree.tostring(fn_xml, xml_declaration=True,
-                                        encoding='UTF-8', standalone=True)
+        try:
+            _write_footnote_part(fn_part, fn_xml)
+        except RuntimeError as e:
+            stats.setdefault('write_error', str(e))
+            print(f"  ⚠ {e}", file=sys.stderr)
 
     return stats
 

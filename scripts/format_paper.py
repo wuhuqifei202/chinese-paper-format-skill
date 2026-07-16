@@ -295,11 +295,16 @@ def format_footnotes(doc):
         for p_elem in fn_elem.findall(qn('w:p')):
             _format_footnote_paragraph(p_elem)
 
-    # 将修改写回 Part blob
+    # 将修改写回 Part (通过 citation_formatter 的统一写入函数)
     if fn_part_obj is not None:
-        from lxml import etree as _etree
-        fn_part_obj._blob = _etree.tostring(
-            fn_xml, xml_declaration=True, encoding='UTF-8', standalone=True)
+        try:
+            from citation_formatter import _write_footnote_part
+            _write_footnote_part(fn_part_obj, fn_xml)
+        except ImportError:
+            # 降级: 直接使用 _blob
+            from lxml import etree as _etree
+            fn_part_obj._blob = _etree.tostring(
+                fn_xml, xml_declaration=True, encoding='UTF-8', standalone=True)
 
 
 def _format_footnote_paragraph(p_elem):
