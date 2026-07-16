@@ -457,33 +457,50 @@ def format_all_footnotes(doc: Document, fix: bool = True) -> Dict:
             if not run_elements:
                 continue
 
-            full_text = ''
-            for r_elem in run_elements:
+            # 找到 footnoteRef 位置 (自动编号所在 run 的索引)
+            ref_run_idx = -1
+            for idx, r_elem in enumerate(run_elements):
+                if r_elem.find(qn('w:footnoteRef')) is not None:
+                    ref_run_idx = idx
+                    break
+
+            # 分别收集脚注编号前后的文本
+            prefix_text = ''    # footnoteRef 之前的文本 (如 "[")
+            suffix_text = ''    # footnoteRef 之后的文本 (引注内容)
+
+            for idx, r_elem in enumerate(run_elements):
                 for t_elem in r_elem.findall(qn('w:t')):
                     if t_elem.text:
-                        full_text += t_elem.text
+                        if idx < ref_run_idx:
+                            prefix_text += t_elem.text
+                        elif idx > ref_run_idx:
+                            suffix_text += t_elem.text
 
-            if not full_text.strip():
+            full_text = prefix_text + suffix_text
+            if not suffix_text.strip():
                 continue
 
-            issues = check_footnote(full_text)
+            issues = check_footnote(suffix_text)
             fn_info['issues'].extend(issues)
             stats['issues'] += len(issues)
 
             if fix and issues:
-                fixed_text, fix_count = auto_fix_footnote(full_text)
+                fixed_text, fix_count = auto_fix_footnote(suffix_text)
                 if fix_count > 0:
                     fn_info['fixed_count'] += fix_count
                     stats['fixed'] += fix_count
 
-                    first_t = None
-                    for r_elem in run_elements:
+                    # 只修改 footnoteRef 之后的 run:
+                    # 第一个 suffix run 写入修复后文本, 其余清空
+                    # footnoteRef 及其之前的 run 原封不动
+                    wrote_fixed = False
+                    for idx, r_elem in enumerate(run_elements):
                         t_elems = r_elem.findall(qn('w:t'))
-                        if t_elems:
-                            if first_t is None:
-                                first_t = t_elems[0]
-                                first_t.text = fixed_text
-                                first_t.set(qn('xml:space'), 'preserve')
+                        if idx > ref_run_idx and t_elems:
+                            if not wrote_fixed:
+                                t_elems[0].text = fixed_text
+                                t_elems[0].set(qn('xml:space'), 'preserve')
+                                wrote_fixed = True
                             else:
                                 for t in t_elems:
                                     t.text = ''
