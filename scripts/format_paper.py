@@ -447,7 +447,7 @@ def format_document(input_path: str, output_path: str,
                 # 摘要: 楷体 小四 单倍行距
                 set_alignment(para, WD_ALIGN_PARAGRAPH.LEFT)
                 set_line_spacing(para)
-                set_first_line_indent(para, chars=2)
+                remove_first_line_indent(para)
                 for run in para.runs:
                     apply_run_font(run, FONT_KAI, FONT_TNR,
                                   SIZE_XIAOSI, bold=False)
@@ -457,7 +457,7 @@ def format_document(input_path: str, output_path: str,
                 # 关键词: 楷体 小四 单倍行距
                 set_alignment(para, WD_ALIGN_PARAGRAPH.LEFT)
                 set_line_spacing(para)
-                set_first_line_indent(para, chars=2)
+                remove_first_line_indent(para)
                 for run in para.runs:
                     apply_run_font(run, FONT_KAI, FONT_TNR,
                                   SIZE_XIAOSI, bold=False)
