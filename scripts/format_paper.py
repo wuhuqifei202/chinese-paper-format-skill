@@ -7,7 +7,7 @@ Chinese Academic Paper Formatter — 中文学术论文格式规范化工具
   一级标题 (一、): 宋体, 小四(12pt), 加粗, 单倍行距, 居中
   二级标题 (（一）): 楷体, 小四(12pt), 加粗, 单倍行距, 缩进2字符
   三级标题 (1. ): 宋体, 五号(10.5pt), 加粗, 单倍行距, 缩进2字符
-  正文: 宋体(中文) + Times New Roman(西文), 五号(10.5pt), 单倍行距
+  正文: 宋体(中文+数字) + Times New Roman(西文字母), 五号(10.5pt), 单倍行距
   脚注: 宋体, 小五号(9pt), 单倍行距, 每页重新编号
 
 Usage:
@@ -53,7 +53,7 @@ SIZE_XIAOWU = Pt(9)       # 小五号  — 脚注
 FONT_HEI = '黑体'                # 论文题目
 FONT_SONG = '宋体'               # 一级/三级标题, 正文, 脚注
 FONT_KAI = '楷体'                # 二级标题
-FONT_TNR = 'Times New Roman'     # 西文默认
+FONT_EN = '宋体'                # 西文/数字字体
 
 # ---------------------------------------------------------------------------
 # 标题检测正则
@@ -345,8 +345,8 @@ def _format_footnote_paragraph(p_elem):
             rFonts = parse_xml(f'<w:rFonts {nsdecls("w")} />')
             rPr.insert(0, rFonts)
         rFonts.set(qn('w:eastAsia'), FONT_SONG)
-        rFonts.set(qn('w:ascii'), FONT_TNR)
-        rFonts.set(qn('w:hAnsi'), FONT_TNR)
+        rFonts.set(qn('w:ascii'), FONT_EN)
+        rFonts.set(qn('w:hAnsi'), FONT_EN)
 
 
 def detect_title_range(paragraphs) -> Tuple[int, int]:
@@ -440,7 +440,7 @@ def format_document(input_path: str, output_path: str,
                 set_line_spacing(para)
                 remove_first_line_indent(para)
                 for run in para.runs:
-                    apply_run_font(run, FONT_HEI, FONT_TNR,
+                    apply_run_font(run, FONT_HEI, FONT_EN,
                                   SIZE_SIHAO, bold=False)
                 stats['title'] += 1
             elif ak_type == 'abstract':
@@ -449,7 +449,7 @@ def format_document(input_path: str, output_path: str,
                 set_line_spacing(para)
                 remove_first_line_indent(para)
                 for run in para.runs:
-                    apply_run_font(run, FONT_KAI, FONT_TNR,
+                    apply_run_font(run, FONT_KAI, FONT_EN,
                                   SIZE_XIAOSI, bold=False)
                 stats.setdefault('abstract', 0)
                 stats['abstract'] += 1
@@ -459,7 +459,7 @@ def format_document(input_path: str, output_path: str,
                 set_line_spacing(para)
                 remove_first_line_indent(para)
                 for run in para.runs:
-                    apply_run_font(run, FONT_KAI, FONT_TNR,
+                    apply_run_font(run, FONT_KAI, FONT_EN,
                                   SIZE_XIAOSI, bold=False)
                 stats.setdefault('keywords', 0)
                 stats['keywords'] += 1
@@ -469,7 +469,7 @@ def format_document(input_path: str, output_path: str,
                 set_line_spacing(para)
                 remove_first_line_indent(para)
                 for run in para.runs:
-                    apply_run_font(run, FONT_HEI, FONT_TNR,
+                    apply_run_font(run, FONT_HEI, FONT_EN,
                                   SIZE_SIHAO, bold=False)
             continue
 
@@ -481,7 +481,7 @@ def format_document(input_path: str, output_path: str,
             set_line_spacing(para)
             remove_first_line_indent(para)
             for run in para.runs:
-                apply_run_font(run, FONT_SONG, FONT_TNR,
+                apply_run_font(run, FONT_SONG, FONT_EN,
                               SIZE_XIAOSI, bold=True)
             stats['headings_l1'] += 1
 
@@ -490,7 +490,7 @@ def format_document(input_path: str, output_path: str,
             set_line_spacing(para)
             set_first_line_indent(para, chars=2)
             for run in para.runs:
-                apply_run_font(run, FONT_KAI, FONT_TNR,
+                apply_run_font(run, FONT_KAI, FONT_EN,
                               SIZE_XIAOSI, bold=True)
             stats['headings_l2'] += 1
 
@@ -499,7 +499,7 @@ def format_document(input_path: str, output_path: str,
             set_line_spacing(para)
             set_first_line_indent(para, chars=2)
             for run in para.runs:
-                apply_run_font(run, FONT_SONG, FONT_TNR,
+                apply_run_font(run, FONT_SONG, FONT_EN,
                               SIZE_WUHAO, bold=True)
             stats['headings_l3'] += 1
 
@@ -510,7 +510,7 @@ def format_document(input_path: str, output_path: str,
             if body_indent > 0:
                 set_first_line_indent(para, chars=body_indent)
             for run in para.runs:
-                apply_run_font(run, FONT_SONG, FONT_TNR,
+                apply_run_font(run, FONT_SONG, FONT_EN,
                               SIZE_WUHAO, bold=False)
             stats['body'] += 1
 
