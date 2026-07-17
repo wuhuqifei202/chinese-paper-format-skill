@@ -145,3 +145,40 @@ class TestAbstractKeywords:
     def test_normal_heading(self):
         """Heading text should return None."""
         assert is_abstract_or_keywords('一、绪论') is None
+
+
+# ── Unnumbered headings ────────────────────────────────────────────────
+
+@pytest.mark.pure
+class TestUnnumberedHeadings:
+    """Test detect_heading_level() for unnumbered chapter titles."""
+
+    def test_introduction_as_level1(self):
+        """引言 should be detected as level 1 heading."""
+        assert detect_heading_level('引言') == 1
+
+    def test_preface_as_level1(self):
+        """前言 should be detected as level 1 heading."""
+        assert detect_heading_level('前言') == 1
+
+    def test_conclusion_as_level1(self):
+        """结论 should be detected as level 1 heading."""
+        assert detect_heading_level('结论') == 1
+
+    def test_conclusion_variant_as_level1(self):
+        """结语 should be detected as level 1 heading."""
+        assert detect_heading_level('结语') == 1
+
+    def test_prolegomenon_as_level1(self):
+        """绪论 should be detected as level 1 heading."""
+        assert detect_heading_level('绪论') == 1
+
+    def test_not_unnumbered_heading(self):
+        """Random words are not unnumbered headings."""
+        assert detect_heading_level('研究背景') == 0
+        assert detect_heading_level('问题提出') == 0
+
+    def test_unnumbered_with_suffix(self):
+        """引言 followed by extra text is NOT an unnumbered heading."""
+        # Only exact match: '引言' not '引言：xxx' or '引言 xxx'
+        assert detect_heading_level('引言：研究背景') == 0

@@ -246,3 +246,44 @@ class TestAbstractFormatting:
             if '摘要' in p.text:
                 assert not _has_indent(p), 'Abstract should not be indented'
                 return
+
+
+@pytest.mark.integration
+class TestTitleRange:
+    """Verify title area is limited to 2 paragraphs."""
+
+    def test_title_range_max_two(self, tmp_path):
+        """Only first 2 non-empty paragraphs → title area. Rest → body."""
+        doc = Document()
+        doc.add_paragraph('笔记1：适用规则之争')       # → title
+        doc.add_paragraph('笔记2：损失界定')            # → subtitle (title area)
+        doc.add_paragraph('笔记3：违约金与解除权')      # → body (beyond limit)
+        doc.add_paragraph('')                           # blank
+        doc.add_paragraph('竞业限制合同的违约金调整规则研究')  # → body
+        doc.add_paragraph('')
+        doc.add_paragraph('一、引言')
+        doc.add_paragraph('正文内容。')
+        inp = str(tmp_path / 'in.docx')
+        doc.save(inp)
+
+        out = str(tmp_path / 'out.docx')
+        format_document(inp, out)
+
+        result = Document(out)
+        paras = [p for p in result.paragraphs if p.text.strip()]
+
+        # Paragraph 0 (笔记1) → title (黑体)
+        info0 = _get_paragraph_font(paras[0])
+        assert info0['eastAsia'] == '黑体'
+        assert info0['size_pt'] == 14.0
+
+        # Paragraph 1 (笔记2) → also title area (within 2-para limit)
+        info1 = _get_paragraph_font(paras[1])
+        assert info1['eastAsia'] == '黑体'
+
+        # Paragraph 2 (笔记3) → should be BODY text, NOT title
+        info2 = _get_paragraph_font(paras[2])
+        assert info2['eastAsia'] == '宋体', \
+            f'Paragraph 3 should be body (宋体), got {info2["eastAsia"]}'
+        assert info2['size_pt'] == 10.5, \
+            f'Paragraph 3 should be body (10.5pt), got {info2["size_pt"]}'

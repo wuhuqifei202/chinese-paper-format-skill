@@ -74,6 +74,9 @@ _RE_LEVEL3_LOOSE = re.compile(r'^\d{1,3}[\.、．]\S')
 _RE_ABSTRACT = re.compile(r'^[【\[]\s*摘\s*要\s*[】\]]|^摘要[：:)]|^摘要\b')
 _RE_KEYWORDS = re.compile(r'^[【\[]\s*关\s*键\s*词\s*[】\]]|^关键词[：:)]|^关键词\b')
 
+# 无编号一级标题: 引言、绪论、前言、结论、结语、导论、序言、余论
+_UNNUMBERED_HEADINGS = {'引言', '绪论', '前言', '结论', '结语', '导论', '序言', '余论'}
+
 
 def is_abstract_or_keywords(text: str) -> Optional[str]:
     """检测段落是否为摘要或关键词.
@@ -140,6 +143,10 @@ def detect_heading_level(text: str) -> int:
         prefix = text[:m1.start()] if m1.start() > 0 else ''
         if prefix:
             return 0
+        return 1
+
+    # 无编号一级标题: 引言、绪论、前言、结论 等
+    if text in _UNNUMBERED_HEADINGS:
         return 1
 
     return 0
@@ -385,10 +392,13 @@ def detect_title_range(paragraphs) -> Tuple[int, int]:
             end = i
             break
 
-        # 非空非标题可能是副标题/作者, 纳入 (但最多3段)
-        end = i + 1
-        if (end - start) >= 5:
-            break
+        # 非空非标题可能是副标题/作者, 纳入
+        # 摘要和关键词属于元数据，不计入上限
+        ak = is_abstract_or_keywords(text)
+        if ak is None:
+            end = i + 1
+            if (end - start) >= 2:
+                break
 
     return (start, end)
 
