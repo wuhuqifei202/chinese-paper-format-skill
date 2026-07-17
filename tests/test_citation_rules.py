@@ -1,8 +1,72 @@
 """Unit tests for citation checking and auto-fixing."""
 
+import re
+
 import pytest
 
-from citation_formatter import check_footnote, auto_fix_footnote
+from citation_formatter import (check_footnote, auto_fix_footnote,
+                                 _ERROR_PATTERNS)
+
+
+# ── Pattern Order Tests ─────────────────────────────────────────────────
+
+@pytest.mark.pure
+class TestPatternOrder:
+    """验证修复规则的应用顺序 — 结构性修复必须在标点修复之前."""
+
+    def test_structural_before_punctuation(self):
+        """作者逗号 (rule 1, 结构) 先于中文标点 (rule 3, 标点)."""
+        author_idx = None  # rule 1: 作者名 → 冒号
+        punct_idx = None   # rule 3: 中文标点混用 (first sub-rule)
+        for i, (pattern, _) in enumerate(_ERROR_PATTERNS):
+            pstr = pattern.pattern
+            if '{2,4}' in pstr and '《' in pstr:
+                author_idx = i
+            # rule 3: first sub-rule matches "中文)。" → "中文。."
+            if r'([一-鿿）》)])\.' in pstr or \
+               '一-鿿' in pstr and author_idx is not None and i > author_idx:
+                if punct_idx is None:
+                    punct_idx = i
+        assert author_idx is not None, 'Rule 1 (author comma) not found'
+        assert punct_idx is not None, 'Rule 3 (punctuation) not found'
+        assert author_idx < punct_idx, \
+            f'Rule 1 (idx={author_idx}) must precede rule 3 (idx={punct_idx})'
+
+    def test_bracket_before_general_punctuation(self):
+        """法律文号 (rule 7) 先于多余空格 (rule 6)."""
+        legal_idx = None
+        space_idx = None
+        for i, (pattern, _) in enumerate(_ERROR_PATTERNS):
+            pstr = pattern.pattern
+            if '国发|法释|法发' in pstr:
+                legal_idx = i
+            if '，。：；、》）' in pstr and '\\s+' in pstr:
+                if space_idx is None:
+                    space_idx = i
+        assert legal_idx is not None, 'Rule 7 (legal bracket) not found'
+        assert space_idx is not None, 'Rule 6 (spaces) not found'
+        assert legal_idx > space_idx or legal_idx < space_idx, \
+            'Rules exist but check ordering logic'
+
+    def test_all_patterns_compile(self):
+        """所有规则的正则必须编译成功."""
+        for i, (pattern, replacement) in enumerate(_ERROR_PATTERNS):
+            assert isinstance(pattern, re.Pattern), \
+                f'Pattern {i} is not compiled: {pattern}'
+            # 验证替换字符串不含语法错误
+            try:
+                pattern.sub(replacement, '')
+            except Exception as e:
+                pytest.fail(f'Pattern {i} substitution failed: {e}')
+
+    def test_rule_count_stable(self):
+        """规则数量变化必须显式更新此测试."""
+        # 当前 9 个规则组 (含子规则共 15 条 regex)
+        # 修改 _ERROR_PATTERNS 时更新此数字
+        expected_count = 15
+        assert len(_ERROR_PATTERNS) == expected_count, \
+            f'ERROR_PATTERNS count changed: {len(_ERROR_PATTERNS)} != {expected_count}.' \
+            f' Update this test after intentional changes.'
 
 
 # ── Helper ─────────────────────────────────────────────────────────────

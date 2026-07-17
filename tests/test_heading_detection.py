@@ -79,11 +79,45 @@ class TestDetectHeadingLevel:
     def test_level3_dot_number(self):
         """1.2 数据来源 — regex sees '1.' as L3 marker, not '1.2' as dotted number.
 
-        Known limitation: the current regex-based approach cannot distinguish
+        Known limitation: the regex-based approach cannot distinguish
         '1. 标题' (heading) from '1.2 数据' (dotted section number).
-        This test documents current behavior; change to assert==0 if fixed.
         """
-        assert detect_heading_level('1.2 数据来源') == 3  # current: matches as L3
+        assert detect_heading_level('1.2 数据来源') == 3
+
+
+# ── Chinese Number Validation ──────────────────────────────────────────
+
+@pytest.mark.pure
+class TestChineseNumberValidation:
+    """结构化中文数字验证 — 确保标题检测不是贪心字符类."""
+
+    def test_shisanwu_not_heading(self):
+        """十三五、 — 不是合法中文章节数字 (十后跟两个数字)."""
+        assert detect_heading_level('十三五、规划') == 0
+
+    def test_shisanwu_alone_not_heading(self):
+        """十三五、 — 单独也不匹配."""
+        assert detect_heading_level('十三五、') == 0
+
+    def test_shisan_is_heading(self):
+        """十三、 — 是合法数字 (13)."""
+        assert detect_heading_level('十三、小结') == 1
+
+    def test_twenty_one_is_heading(self):
+        """二十一、 — 是合法数字 (21)."""
+        assert detect_heading_level('二十一、展望') == 1
+
+    def test_one_hundred_twenty_three_is_heading(self):
+        """一百二十三、 — 是合法数字 (123)."""
+        assert detect_heading_level('一百二十三、附则') == 1
+
+    def test_one_hundred_one_is_heading(self):
+        """一百零一、 — 是合法数字 (101)."""
+        assert detect_heading_level('一百零一、补充规定') == 1
+
+    def test_one_hundred_twenty_is_heading(self):
+        """一百二十、 — 是合法数字 (120)."""
+        assert detect_heading_level('一百二十、附则') == 1
 
     def test_level3_too_long(self):
         """1.  with > 60 chars should not be a heading."""

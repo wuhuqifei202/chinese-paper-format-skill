@@ -47,3 +47,9 @@
 - **修复**: 44afac6
 - **原因**: 标题区域检测将第一标题前的所有段落统一格式化为标题样式，未区分摘要/关键词
 - **测试**: test_abstract_kaiti test_keywords_kaiti test_abstract_no_indent
+
+## BUG-007: 中文数字标题用贪心字符类，十三五/被误判
+
+- **修复**: (pending commit)
+- **原因**: `^[一二三四五六七八九十百千]+[、]` 贪心匹配任意字符序列，<br>不验证中文数字的合法结构。「十三五、」中「十三」被当作合法章节号
+- **测试**: test_shisanwu_not_heading test_shisanwu_alone_not_heading test_shisan_is_heading test_one_hundred_one_is_heading test_one_hundred_twenty_three_is_heading test_structural_before_punctuation test_all_patterns_compile test_rule_count_stable

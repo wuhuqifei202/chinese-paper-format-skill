@@ -32,7 +32,7 @@ GOLDEN_CASES = [
         'input': GOLDEN_DIR / '竞业限制' / 'input.docx',
         'expected': GOLDEN_DIR / '竞业限制' / 'expected.docx',
         'body_indent': 2,
-        'fix_citations': False,
+        'fix_citations': True,
     },
 ]
 
