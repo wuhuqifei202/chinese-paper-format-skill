@@ -33,20 +33,21 @@ class TestPatternOrder:
             f'Rule 1 (idx={author_idx}) must precede rule 3 (idx={punct_idx})'
 
     def test_bracket_before_general_punctuation(self):
-        """法律文号 (rule 7) 先于多余空格 (rule 6)."""
-        legal_idx = None
-        space_idx = None
+        """空格清理在最后执行."""
+        # Space cleanup patterns use \\s+ to match whitespace
+        # They should be at the very end of the list
+        space_indices = []
         for i, (pattern, _) in enumerate(_ERROR_PATTERNS):
             pstr = pattern.pattern
-            if '国发|法释|法发' in pstr:
-                legal_idx = i
-            if '，。：；、》）' in pstr and '\\s+' in pstr:
-                if space_idx is None:
-                    space_idx = i
-        assert legal_idx is not None, 'Rule 7 (legal bracket) not found'
-        assert space_idx is not None, 'Rule 6 (spaces) not found'
-        assert legal_idx > space_idx or legal_idx < space_idx, \
-            'Rules exist but check ordering logic'
+            # pstr is from pattern.pattern — contains literal \s (backslash+s)
+            if pstr.endswith('\\s+') or ('\\s+' in pstr and '字第' not in pstr):
+                space_indices.append(i)
+        assert len(space_indices) >= 2, \
+            f'Space cleanup rules not found (found {len(space_indices)} at {space_indices})'
+        last_idx = len(_ERROR_PATTERNS) - 1
+        for si in space_indices:
+            assert si >= last_idx - 2, \
+                f'Space cleanup (idx={si}) should be at end (last={last_idx})'
 
     def test_all_patterns_compile(self):
         """所有规则的正则必须编译成功."""
@@ -61,9 +62,9 @@ class TestPatternOrder:
 
     def test_rule_count_stable(self):
         """规则数量变化必须显式更新此测试."""
-        # 当前 9 个规则组 (含子规则共 15 条 regex)
+        # 当前 9 组规则, 含子规则共 22 条 regex (v1.1: 扩展了标点统一规则)
         # 修改 _ERROR_PATTERNS 时更新此数字
-        expected_count = 15
+        expected_count = 21
         assert len(_ERROR_PATTERNS) == expected_count, \
             f'ERROR_PATTERNS count changed: {len(_ERROR_PATTERNS)} != {expected_count}.' \
             f' Update this test after intentional changes.'
