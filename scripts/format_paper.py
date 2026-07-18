@@ -562,6 +562,22 @@ def format_document(input_path: str, output_path: str,
         print(f"  ⚠ 脚注处理异常: {e}")
         stats['errors'] += 1
 
+    # —— 标点规范化 (正文) ——
+    try:
+        from citation_formatter import normalize_chinese_punctuation
+        punct_fixes = 0
+        for para in doc.paragraphs:
+            for run in para.runs:
+                if run.text:
+                    new_text = normalize_chinese_punctuation(run.text)
+                    if new_text != run.text:
+                        punct_fixes += 1
+                        run.text = new_text
+        if punct_fixes > 0:
+            stats['punct_fixes'] = punct_fixes
+    except ImportError:
+        pass
+
     # —— 保存 ——
     doc.save(output_path)
     return stats
@@ -869,6 +885,8 @@ def _print_stats(stats: dict):
         parts.append(f"正文段落: {stats['body']}")
     if stats.get('footnotes'):
         parts.append(f"脚注: {stats['footnotes']}")
+    if stats.get('punct_fixes'):
+        parts.append(f"标点规范: {stats['punct_fixes']}处")
     if stats.get('errors'):
         parts.append(f"异常: {stats['errors']}")
     if parts:

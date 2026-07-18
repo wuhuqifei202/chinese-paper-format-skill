@@ -159,6 +159,43 @@ _RE_OLD_CASE_NUMBER = re.compile(r'字第\d+\s*号')
 #   3. 写回 _ERROR_PATTERNS 前，新规则必须在本测试文件中验证其位置不
 #      与已有序号冲突。相关测试: tests/test_citation_rules.py::TestPatternOrder
 # ---------------------------------------------------------------------------
+# ── 中文标点规范化 (公共函数, 供正文和脚注共用) ──
+
+_PUNCTUATION_PATTERNS = [
+    # 句中: 中文后英文标点再接中文
+    (re.compile(r'([一-鿿）》）])\.(?=[\s一-鿿（《])'), r'\1。'),
+    (re.compile(r'([一-鿿）》》]),(?=\s*[一-鿿（《])'), r'\1，'),
+    (re.compile(r'([一-鿿）》》]);(?=\s*[一-鿿（《])'), r'\1；'),
+    (re.compile(r'([一-鿿）》》]):(?=\s*[一-鿿（《])'), r'\1：'),
+    # 终端句号
+    (re.compile(r'([一-鿿》）》\d])\.[\s]*$'), r'\1。'),
+    # 中文问号 / 叹号
+    (re.compile(r'([一-鿿）》》])\?'), r'\1？'),
+    (re.compile(r'([一-鿿）》》])!'), r'\1！'),
+    # 英文括号包中文内容 (保护纯数字)
+    (re.compile(r'\(([一-鿿][^)]*[一-鿿》])\)'), r'（\1）'),
+    # 中文后独立英文括号
+    (re.compile(r'([一-鿿》）])\((?=[一-鿿（《])'), r'\1（'),
+    (re.compile(r'(?<=[一-鿿》）])\)'), r'）'),
+    # 空格清理
+    (re.compile(r'([，。：；、）》》）])\s+'), r'\1'),
+    (re.compile(r'\s+([，。：；、《（])'), r'\1'),
+]
+
+
+def normalize_chinese_punctuation(text: str) -> str:
+    """将中文上下文中的英文标点统一替换为中文标点.
+
+    同时清理多余空格。不修改数字、案号、文号中的标点。
+    可供正文和脚注共同调用。
+    """
+    for pattern, replacement in _PUNCTUATION_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+# ── 引注自动修复规则 ──
+
 _ERROR_PATTERNS = [
     # 1. 作者名后逗号+书名号 → 冒号+书名号 (如 "王利明, 《" → "王利明：《")
     (re.compile(r'([一-鿿]{2,4})\s*[,，]\s*(《[^》]+》)'), r'\1：\2'),
