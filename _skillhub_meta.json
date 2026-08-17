@@ -1,0 +1,20 @@
+{
+  "name": "chinese-paper-format-skill",
+  "installedAt": 1786963285706,
+  "source": "local",
+  "version": "1.3.0",
+  "userModified": true,
+  "skillId": "local_chinese-paper-format-skill",
+  "examples_zh": [
+    "把这篇论文格式化成学术规范",
+    "统一调整论文排版",
+    "批量格式化文件夹里的论文"
+  ],
+  "examples_en": [
+    "Format this paper to academic style",
+    "Unify paper formatting",
+    "Batch format papers in a folder"
+  ],
+  "description_zh": "中文学术论文格式规范化: docx 排版(题目/一~四级标题/正文/脚注)、引注修复、自定义格式规则、markdown 中转",
+  "description_en": "Format Chinese academic papers (docx) per academic conventions"
+}

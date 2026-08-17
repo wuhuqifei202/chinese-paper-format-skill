@@ -156,18 +156,49 @@ class TestFootnoteOrder:
         fns = extract_footnotes(doc2)
         fn_texts = {fn['id']: fn['full_text'] for fn in fns}
 
-        # Fn1: 国发[2007] → 国发〔2007〕
+        # Fn1: 示例发[2020] → 示例发〔2020〕
         if 1 in fn_texts:
-            assert '国发〔2007〕' in fn_texts[1], \
+            assert '示例发〔2020〕' in fn_texts[1], \
                 f'Legal bracket not fixed: {fn_texts[1]}'
-            assert '国发[2007]' not in fn_texts[1]
+            assert '示例发[2020]' not in fn_texts[1]
 
-        # Fn2: [1998] → （1998）
+        # Fn2: [2021] → （2021）
         if 2 in fn_texts:
-            assert '（1998）' in fn_texts[2], \
+            assert '（2021）' in fn_texts[2], \
                 f'Case bracket not fixed: {fn_texts[2]}'
 
-        # Fn3: 法释[2018] → 法释〔2018〕
+        # Fn3: 示例发[2018] → 示例发〔2018〕
         if 3 in fn_texts:
-            assert '法释〔2018〕' in fn_texts[3], \
+            assert '示例发〔2018〕' in fn_texts[3], \
                 f'Legal bracket not fixed: {fn_texts[3]}'
+
+    def test_missing_year_fixed(self, docx_with_missing_year):
+        """BUG-006: 出版社缺"年版"应被修复 (auto_fix 能力大于 check 检测面)."""
+        doc = Document(docx_with_missing_year)
+        stats = format_all_footnotes(doc, fix=True)
+
+        import io
+        buf = io.BytesIO()
+        doc.save(buf)
+        buf.seek(0)
+        doc2 = Document(buf)
+
+        fns = extract_footnotes(doc2)
+        text = fns[0]['full_text']
+        assert '示例出版社2017年版' in text, f'缺年版未修复: {text!r}'
+        assert stats['fixed'] >= 1, 'stats 应记录修复数'
+
+    def test_trailing_period_fixed(self, docx_with_trailing_period):
+        """BUG-006: 终端英文句号应修复为中文句号."""
+        doc = Document(docx_with_trailing_period)
+        format_all_footnotes(doc, fix=True)
+
+        import io
+        buf = io.BytesIO()
+        doc.save(buf)
+        buf.seek(0)
+        doc2 = Document(buf)
+
+        fns = extract_footnotes(doc2)
+        text = fns[0]['full_text']
+        assert text.strip().endswith('页。'), f'终端句号未修复: {text!r}'

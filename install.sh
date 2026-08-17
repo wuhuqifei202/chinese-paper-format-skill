@@ -1,6 +1,6 @@
 #!/bin/sh
 # install.sh — Cross-platform skill installation script
-# Generated for chinese-paper-format-skill v1.0.0
+# Generated for chinese-paper-format-skill v1.1.0
 #
 # POSIX-compatible (works in bash, dash, zsh, ash, etc.)
 # Exit codes:
@@ -15,7 +15,7 @@ set -eu
 # Constants
 # ---------------------------------------------------------------------------
 SKILL_NAME="chinese-paper-format-skill"
-VERSION="1.0.0"
+VERSION="1.1.0"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ OPTIONS
                           claude-code, copilot, cursor, windsurf,
                           cline, codex, gemini, kiro, trae, goose,
                           opencode, roo-code, kilo-code, factory,
-                          junie, antigravity, universal
+                          junie, antigravity, workbuddy, universal
     --project             Install at project level (current directory)
     --path PATH           Custom install path (overrides detection)
     --all                 Install to ALL detected tool paths at once
@@ -183,14 +183,14 @@ validate_skill_md() {
 # ---------------------------------------------------------------------------
 # Platform detection
 # ---------------------------------------------------------------------------
-SUPPORTED_PLATFORMS="claude-code, copilot, cursor, windsurf, cline, codex, gemini, kiro, trae, goose, opencode, roo-code, kilo-code, factory, junie, antigravity, universal"
+SUPPORTED_PLATFORMS="claude-code, copilot, cursor, windsurf, cline, codex, gemini, kiro, trae, goose, opencode, roo-code, kilo-code, factory, junie, antigravity, workbuddy, universal"
 
 detect_platform() {
     if [ -n "$PLATFORM" ]; then
         case "$PLATFORM" in
             claude-code|copilot|cursor|windsurf|cline|codex|gemini|\
             kiro|trae|goose|opencode|roo-code|kilo-code|factory|\
-            junie|antigravity|universal)
+            junie|antigravity|workbuddy|universal)
                 info "Platform explicitly set to: ${PLATFORM}"
                 return 0
                 ;;
@@ -230,6 +230,8 @@ detect_platform() {
         PLATFORM="goose"
     elif [ -d "${HOME}/.config/opencode" ]; then
         PLATFORM="opencode"
+    elif [ -d "${HOME}/.workbuddy" ]; then
+        PLATFORM="workbuddy"
     elif [ -d "${HOME}/.agents" ]; then
         PLATFORM="universal"
     else
@@ -286,6 +288,9 @@ detect_all_platforms() {
     if [ -d "${HOME}/.config/opencode" ]; then
         ALL_PLATFORMS="${ALL_PLATFORMS} opencode"
     fi
+    if [ -d "${HOME}/.workbuddy" ]; then
+        ALL_PLATFORMS="${ALL_PLATFORMS} workbuddy"
+    fi
     ALL_PLATFORMS="${ALL_PLATFORMS} universal"
     ALL_PLATFORMS="$(printf '%s' "$ALL_PLATFORMS" | sed 's/^ //')"
     if [ -z "$ALL_PLATFORMS" ]; then
@@ -319,6 +324,7 @@ resolve_install_path() {
             factory)       base=".factory/skills" ;;
             junie)         base=".junie/skills" ;;
             antigravity)   base=".agent/skills" ;;
+            workbuddy)     base=".workbuddy/skills" ;;
             universal)     base=".agents/skills" ;;
         esac
         INSTALL_DIR="$(pwd)/${base}/${SKILL_NAME}"
@@ -340,6 +346,7 @@ resolve_install_path() {
             factory)       base="${HOME}/.factory/skills" ;;
             junie)         base="${HOME}/.junie/skills" ;;
             antigravity)   base="${HOME}/.gemini/antigravity/skills" ;;
+            workbuddy)     base="${HOME}/.workbuddy/skills" ;;
             universal)     base="${HOME}/.agents/skills" ;;
         esac
         INSTALL_DIR="${base}/${SKILL_NAME}"
@@ -413,6 +420,39 @@ install_files() {
     success "Copied ${file_count} file(s) to ${INSTALL_DIR}"
 }
 
+# workbuddy 平台格式适配: SKILL.md frontmatter 转换 + _skillhub_meta.json
+# (workbuddy 的 skill 格式与 Claude Agent Skills 标准不同)
+adapt_for_workbuddy() {
+    case "$PLATFORM" in
+        workbuddy) ;;
+        *) return 0 ;;
+    esac
+
+    PY=""
+    if command -v python3 >/dev/null 2>&1; then
+        PY="python3"
+    elif command -v python >/dev/null 2>&1; then
+        PY="python"
+    fi
+
+    if [ -z "$PY" ]; then
+        warn "未找到 python, 跳过 workbuddy 格式适配 (SKILL.md 以原版安装)"
+        return 0
+    fi
+
+    if $DRY_RUN; then
+        info "Would adapt SKILL.md for workbuddy format: ${INSTALL_DIR}"
+        return 0
+    fi
+
+    if "$PY" "${SCRIPT_DIR}/scripts/adapt_workbuddy.py" \
+        "$SCRIPT_DIR" "$INSTALL_DIR" >/dev/null 2>&1; then
+        success "workbuddy 格式适配完成 (SKILL.md + _skillhub_meta.json)"
+    else
+        warn "workbuddy 格式适配失败, 保留原版 SKILL.md"
+    fi
+}
+
 install_universal_secondary() {
     case "$PLATFORM" in
         codex|universal) return 0 ;;
@@ -468,6 +508,7 @@ install_single() {
     detect_platform
     resolve_install_path
     install_files
+    adapt_for_workbuddy
     install_universal_secondary
     print_activation_instructions
     if $DRY_RUN; then
@@ -489,6 +530,7 @@ install_all() {
         PLATFORM="$plat"
         resolve_install_path
         install_files
+        adapt_for_workbuddy
         installed_count=$((installed_count + 1))
         if [ -z "$first_non_agents_dir" ]; then
             case "$plat" in

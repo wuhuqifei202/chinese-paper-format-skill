@@ -5,7 +5,7 @@ import re
 import pytest
 
 from citation_formatter import (check_footnote, auto_fix_footnote,
-                                 _ERROR_PATTERNS)
+                                 _ERROR_PATTERNS, normalize_chinese_punctuation)
 
 
 # ── Pattern Order Tests ─────────────────────────────────────────────────
@@ -255,3 +255,45 @@ class TestAutoFix:
         fixed, count = auto_fix_footnote(text)
         assert count == 0
         assert fixed == text
+
+
+@pytest.mark.pure
+class TestPunctuationNormalization:
+    """正文标点规范化 (回归: text-biaodian C15/C17 缺陷)."""
+
+    def test_mixed_abbrev_bracket_paired(self):
+        """括号内含英文缩写 (e.g./i.e.): 整对转全角 (回归修复)."""
+        assert normalize_chinese_punctuation('说明(e.g.方法论).') == '说明（e.g.方法论）。'
+        assert normalize_chinese_punctuation('(i.e.域外经验).') == '（i.e.域外经验）。'
+
+    def test_cn_bracket_paired(self):
+        """括号包中文: 整对转全角."""
+        assert normalize_chinese_punctuation('(即以物抵债协议)') == '（即以物抵债协议）'
+
+    def test_url_following_comma(self):
+        """URL 后接中文的英文逗号 → 中文逗号 (回归修复)."""
+        got = normalize_chinese_punctuation('见https://www.example.com,该网站')
+        assert 'www.example.com，该网站' in got
+
+    def test_numeric_comma_protected(self):
+        """千位分隔 1,000 应保留."""
+        got = normalize_chinese_punctuation('样本量为1,000条.')
+        assert '1,000条。' in got
+
+    def test_decimal_protected(self):
+        """小数 3.14 应保留."""
+        got = normalize_chinese_punctuation('如3.14.')
+        assert '如3.14。' in got
+
+    def test_url_dots_protected(self):
+        """URL 的点号应保留 (含行尾, 保护优先于句号转换)."""
+        assert normalize_chinese_punctuation('见https://www.example.com.') == \
+            '见https://www.example.com.'
+        # URL 之后有中文时, 中文句号才转换
+        got = normalize_chinese_punctuation('见https://www.example.com.该网站.')
+        assert 'www.example.com.该网站。' in got
+
+    def test_pure_number_paren_protected(self):
+        """纯数字括号 (2020) 保持半角."""
+        got = normalize_chinese_punctuation('报告(2020)发布.')
+        assert '（2020）' not in got

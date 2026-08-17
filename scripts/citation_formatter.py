@@ -24,6 +24,7 @@ Usage:
 
 import re
 import sys
+import os
 import argparse
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
@@ -31,6 +32,17 @@ from typing import List, Dict, Optional, Tuple
 from docx import Document
 from docx.oxml.ns import qn, nsdecls
 from docx.oxml import parse_xml
+
+# 确保脚本目录在 sys.path 中 — 裸 import citation_rules 依赖于此
+# (以 `python scripts/xxx.py` 运行时 sys.path[0] 恰为脚本目录; 任意 cwd/入口下需显式注入)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# 注释体例模块 (可选导入: 提供默认体例 + 自定义配置加载)
+try:
+    from citation_rules import load_citation_rules, describe_style
+    _HAS_CITATION_RULES = True
+except ImportError:
+    _HAS_CITATION_RULES = False
 
 # ---------------------------------------------------------------------------
 # 中文标点映射 — 用于修复英文标点
@@ -167,14 +179,16 @@ _PUNCTUATION_PATTERNS = [
     (re.compile(r'([一-鿿）》》]),(?=\s*[一-鿿（《])'), r'\1，'),
     (re.compile(r'([一-鿿）》》]);(?=\s*[一-鿿（《])'), r'\1；'),
     (re.compile(r'([一-鿿）》》]):(?=\s*[一-鿿（《])'), r'\1：'),
-    # 终端句号
+    # 英文/数字后、中文前的英文逗号 (如 URL 后接中文句, 保护 1,000)
+    (re.compile(r'(?<=[A-Za-z0-9]),(?=\s*[一-鿿（《])'), r'，'),
+    # 英文括号包中文 (含 e.g./i.e. 等缩写混排, 整对转换; 保护纯数字/纯英文)
+    (re.compile(r'\(([^()]*[一-鿿][^()]*)\)'), r'（\1）'),
+    # 终端句号 (在括号成对转换之后执行, 确保全角 ）后句号也能转)
     (re.compile(r'([一-鿿》）》\d])\.[\s]*$'), r'\1。'),
     # 中文问号 / 叹号
     (re.compile(r'([一-鿿）》》])\?'), r'\1？'),
     (re.compile(r'([一-鿿）》》])!'), r'\1！'),
-    # 英文括号包中文内容 (保护纯数字)
-    (re.compile(r'\(([一-鿿][^)]*[一-鿿》])\)'), r'（\1）'),
-    # 中文后独立英文括号
+    # 中文后独立英文括号 (兜底: 修复输入中已混排的半角括号)
     (re.compile(r'([一-鿿》）])\((?=[一-鿿（《])'), r'\1（'),
     (re.compile(r'(?<=[一-鿿》）])\)'), r'）'),
     # 空格清理
@@ -196,56 +210,131 @@ def normalize_chinese_punctuation(text: str) -> str:
 
 # ── 引注自动修复规则 ──
 
-_ERROR_PATTERNS = [
-    # 1. 作者名后逗号+书名号 → 冒号+书名号 (如 "王利明, 《" → "王利明：《")
-    (re.compile(r'([一-鿿]{2,4})\s*[,，]\s*(《[^》]+》)'), r'\1：\2'),
+# 修复规则按「组」组织, 便于按注释体例开关 (见 citation_rules.py 的 rules)。
+# _ERROR_PATTERNS 为全部规则的扁平拼接, 顺序保持不变 (结构性修复 → 标点 → 空格),
+# 供既有测试与调用方使用。
 
-    # 2. 英文页码格式 p.xx → 第xx页
+# 1. 作者名后逗号+书名号 → 冒号+书名号 (如 "王利明, 《" → "王利明：《")
+_RULES_AUTHOR_SEPARATOR = [
+    (re.compile(r'([一-鿿]{2,4})\s*[,，]\s*(《[^》]+》)'), r'\1：\2'),
+]
+
+# 2. 英文页码格式 p.xx → 第xx页
+_RULES_PAGE_FORMAT = [
     (re.compile(r'[,，]\s*[Pp]\.\s*(\d+)'), r'，第\1页'),
     (re.compile(r'([。；])\s*[Pp]\.\s*(\d+)'), r'\1第\2页'),
+]
 
-    # 3. 中英文标点混用 (中文上下文中统一使用中文标点)
-    # 3a. 句中: 中文后英文标点再接中文
+# 3. 中英文标点混用 (中文上下文中统一使用中文标点)
+_RULES_PUNCTUATION = [
     (re.compile(r'([一-鿿）》）])\.(?=[\s一-鿿（《])'), r'\1。'),
     (re.compile(r'([一-鿿）》》]),(?=\s*[一-鿿（《])'), r'\1，'),
     (re.compile(r'([一-鿿）》》]);(?=\s*[一-鿿（《])'), r'\1；'),
     (re.compile(r'([一-鿿）》》]):(?=\s*[一-鿿（《])'), r'\1：'),
-    # 3b. 终端句号: 中文/数字后英文句号且行尾
     (re.compile(r'([一-鿿》）》\d])\.[\s]*$'), r'\1。'),
-    # 3c. 中文问号 / 叹号
     (re.compile(r'([一-鿿）》》])\?'), r'\1？'),
     (re.compile(r'([一-鿿）》》])!'), r'\1！'),
-    # 3d. 英文括号包中文内容 (保护纯数字年份/案号不转换)
     (re.compile(r'\(([一-鿿][^)]*[一-鿿》])\)'), r'（\1）'),
-    # 3e. 中文后独立英文括号
     (re.compile(r'([一-鿿》）])\((?=[一-鿿（《])'), r'\1（'),
     (re.compile(r'(?<=[一-鿿》）])\)'), r'）'),
+]
 
-    # 4. "载"字缺失 (期刊/报纸文章 — 文章名后逗号+期刊名+年份)
+# 4. "载"字缺失 (期刊/报纸文章 — 文章名后逗号+期刊名+年份)
+_RULES_ZAI = [
     (re.compile(r'，《([^》]+)》(\d{4})\s*年\s*第'), r'，载《\1》\2年第'),
+]
 
-    # 5. 出版社格式不完整 (缺"年版")
+# 5. 出版社格式不完整 (缺"年版")
+_RULES_PUBLISHER = [
     (re.compile(r'([一-鿿]+出版社)\s*(\d{4})\s*年\s*[,，]'), r'\1\2年版，'),
     (re.compile(r'([一-鿿]+出版社)\s*(\d{4})\s*年\s*([。；])'), r'\1\2年版\3'),
+]
 
-    # 6. 文号方括号 → 六角括号: 国发[2007]19号 → 国发〔2007〕19号
+# 6. 文号方括号 → 六角括号: 国发[2007]19号 → 国发〔2007〕19号
+_RULES_LEGAL_BRACKET = [
     (re.compile(r'(国发|法释|法发|法〔[^〕]+〕|[一-鿿]+[发字])\s*\[\s*(\d{4})\s*\]\s*(\d+\s*号)'),
      r'\1〔\2〕\3'),
+]
 
-    # 8. 案号年份方括号 → 圆括号: [1998]→(1998)
+# 7. 案号年份方括号 → 圆括号: [1998]→(1998); 及缺少年份括号
+_RULES_CASE_BRACKET = [
     (re.compile(r'[\[【]\s*(\d{4})\s*[\]】]\s*([一-鿿A-Za-z].+?号)'),
      r'（\1）\2'),
-
-    # 8. 案号缺少年份括号: 1998 海行初字 → (1998)海行初字
     (re.compile(r'(?<=\s)(\d{4})\s+([一-鿿][一-鿿A-Za-z]+(?:字第?)?\d+\s*号)'),
      r'（\1）\2'),
+]
 
-    # ── 空格清理 (最后执行, 清除标点替换后的残留空格) ──
-
-    # 9. 多余空格
+# 8. 多余空格 (最后执行, 清除标点替换后的残留空格)
+_RULES_SPACES = [
     (re.compile(r'([，。：；、）》》）])\s+'), r'\1'),
     (re.compile(r'\s+([，。：；、《（])'), r'\1'),
 ]
+
+# —— 默认注释体例的扩展修复规则 (受体例开关控制, 不并入 _ERROR_PATTERNS) ——
+
+# 版次归位: 《书名》第N版 → 《书名》（第N版）
+_RULES_EDITION = [
+    (re.compile(r'《([^》]+)》(第\s*\d+\s*版)'), r'《\1》（\2）'),
+]
+
+# 译者署名: 译者名与 "译" 之间的空格清理 ("黄家镇 译" → "黄家镇译")
+_RULES_TRANSLATOR = [
+    (re.compile(r'([一-鿿]{2,4}(?:、[一-鿿]{2,4})*)\s+译(?=[，。；）]|$)'), r'\1译'),
+]
+
+# 扁平规则表 (保持原顺序, 供既有测试/调用使用)
+_ERROR_PATTERNS = (
+    _RULES_AUTHOR_SEPARATOR +
+    _RULES_PAGE_FORMAT +
+    _RULES_PUNCTUATION +
+    _RULES_ZAI +
+    _RULES_PUBLISHER +
+    _RULES_LEGAL_BRACKET +
+    _RULES_CASE_BRACKET +
+    _RULES_SPACES
+)
+
+# 规则组名 → 规则组列表 (对应 citation_rules.py 的 rules 开关键名)
+_RULE_GROUPS = {
+    'author_separator': _RULES_AUTHOR_SEPARATOR,
+    'page_format': _RULES_PAGE_FORMAT,
+    'punctuation': _RULES_PUNCTUATION,
+    'zai_marker': _RULES_ZAI,
+    'publisher_year': _RULES_PUBLISHER,
+    'legal_bracket': _RULES_LEGAL_BRACKET,
+    'case_bracket': _RULES_CASE_BRACKET,
+    'edition': _RULES_EDITION,
+    'translator': _RULES_TRANSLATOR,
+}
+
+
+def _resolve_style(style):
+    """解析体例: None 时加载默认体例 (若无 citation_rules 模块则返回 None)."""
+    if style is not None:
+        return style
+    if _HAS_CITATION_RULES:
+        return load_citation_rules()
+    return None
+
+
+def _rule_enabled(style, name: str) -> bool:
+    """判断某修复规则是否启用 (style 为 None 或未配置时默认启用)."""
+    if style is None or 'rules' not in style:
+        return True
+    return style['rules'].get(name, True)
+
+
+def _patterns_for_style(style) -> List[Tuple]:
+    """按体例的 rules 开关返回要应用的 (pattern, replacement) 列表."""
+    if not _HAS_CITATION_RULES or style is None:
+        return list(_ERROR_PATTERNS)
+    patterns: List[Tuple] = []
+    for name, group in _RULE_GROUPS.items():
+        if not _rule_enabled(style, name):
+            continue
+        patterns.extend(group)
+    patterns.extend(_RULES_SPACES)  # 空格清理总是执行
+    return patterns
 
 
 def _get_footnotes_xml(doc) -> Optional[object]:
@@ -617,8 +706,13 @@ def _check_case_citation(text: str, issues: List[Dict]):
             })
 
 
-def auto_fix_footnote(text: str) -> Tuple[str, int]:
+def auto_fix_footnote(text: str, style=None) -> Tuple[str, int]:
     """自动修复脚注文本中的常见格式问题.
+
+    Args:
+        text: 脚注文本.
+        style: 注释体例 dict (citation_rules.load_citation_rules 输出);
+               None = 默认体例. 体例的 rules 开关决定启用哪些修复规则.
 
     Returns:
         (fixed_text, fix_count) — 修复后的文本和修复次数.
@@ -626,27 +720,30 @@ def auto_fix_footnote(text: str) -> Tuple[str, int]:
     fixed = text
     count = 0
 
-    # 应用错误模式修复
-    for pattern, replacement in _ERROR_PATTERNS:
+    style = _resolve_style(style)
+
+    # 应用错误模式修复 (按体例开关选择规则组)
+    for pattern, replacement in _patterns_for_style(style):
         new_text, n = pattern.subn(replacement, fixed)
         if n > 0:
             fixed = new_text
             count += n
 
     # 修复出版社格式: "××出版社××××年" → "××出版社××××年版"
-    pub_fix = re.sub(
-        r'([一-鿿]+出版社)\s*(\d{4})\s*年\s*$',
-        r'\1\2年版',
-        fixed
-    )
-    pub_fix = re.sub(
-        r'([一-鿿]+出版社)\s*(\d{4})\s*年\s*[,，]',
-        r'\1\2年版，',
-        pub_fix
-    )
-    if pub_fix != fixed:
-        count += 1
-        fixed = pub_fix
+    if _rule_enabled(style, 'publisher_year'):
+        pub_fix = re.sub(
+            r'([一-鿿]+出版社)\s*(\d{4})\s*年\s*$',
+            r'\1\2年版',
+            fixed
+        )
+        pub_fix = re.sub(
+            r'([一-鿿]+出版社)\s*(\d{4})\s*年\s*[,，]',
+            r'\1\2年版，',
+            pub_fix
+        )
+        if pub_fix != fixed:
+            count += 1
+            fixed = pub_fix
 
     # 修复引注符号后的多余空格
     fixed = re.sub(r'^(\s*\d+)\s+(?=[一-鿿\[（])', r'\1 ', fixed)
@@ -742,8 +839,16 @@ def write_footnotes_via_zipfile(docx_path: str) -> bool:
     return True
 
 
-def format_all_footnotes(doc: Document, fix: bool = True) -> Dict:
-    """格式化文档中所有脚注的引注内容."""
+def format_all_footnotes(doc: Document, fix: bool = True,
+                         style=None) -> Dict:
+    """格式化文档中所有脚注的引注内容.
+
+    Args:
+        doc: Document 对象.
+        fix: True 时执行修复, False 仅检测.
+        style: 注释体例 dict; None = 默认体例.
+    """
+    style = _resolve_style(style)
     fn_xml = _get_footnotes_xml(doc)
     if fn_xml is None:
         return {'total': 0, 'issues': 0, 'fixed': 0, 'checked': [],
@@ -792,12 +897,11 @@ def format_all_footnotes(doc: Document, fix: bool = True) -> Dict:
             if not suffix_text.strip():
                 continue
 
-            issues = check_footnote(suffix_text)
-            fn_info['issues'].extend(issues)
-            stats['issues'] += len(issues)
-
-            if fix and issues:
-                fixed_text, fix_count = auto_fix_footnote(suffix_text)
+            if fix:
+                # 先修复, 再检测剩余问题. 修复不依赖检测门控 — auto_fix 的
+                # 修复能力大于 check 的检测面时 (缺"年版"、终端句号等), 修复
+                # 仍会执行, 检测结果反映修复后的剩余问题.
+                fixed_text, fix_count = auto_fix_footnote(suffix_text, style=style)
                 if fix_count > 0:
                     fn_info['fixed_count'] += fix_count
                     stats['fixed'] += fix_count
@@ -816,6 +920,12 @@ def format_all_footnotes(doc: Document, fix: bool = True) -> Dict:
                             else:
                                 for t in t_elems:
                                     t.text = ''
+                    suffix_text = fixed_text
+
+            # 检测 (修复后文本; 未修复时为原始文本)
+            issues = check_footnote(suffix_text)
+            fn_info['issues'].extend(issues)
+            stats['issues'] += len(issues)
 
         stats['checked'].append(fn_info)
 
@@ -832,23 +942,50 @@ def format_all_footnotes(doc: Document, fix: bool = True) -> Dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='法学引注格式规范化工具 — 依据《法学引注手册》(2019)',
+        description='引注格式规范化工具 — 默认依据《法学引注手册》(2019), 支持自定义',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
   python citation_formatter.py 论文.docx --check          # 仅检查不修改
   python citation_formatter.py 论文.docx --fix             # 自动修复
   python citation_formatter.py 论文.docx -o 输出.docx      # 输出到新文件
+  python citation_formatter.py --show-style                # 打印默认注释体例
+  python citation_formatter.py --citation-rules 体例.json --show-style
         """,
     )
-    parser.add_argument('input', help='输入 .docx 文件路径')
+    parser.add_argument('input', nargs='?', help='输入 .docx 文件路径 '
+                        '(使用 --show-style 时可不提供)')
     parser.add_argument('-o', '--output', help='输出文件路径')
     parser.add_argument('--check', action='store_true',
                         help='仅检查引注格式, 不修改')
     parser.add_argument('--fix', action='store_true',
                         help='自动修复检测到的格式问题')
+    parser.add_argument('--citation-rules', default=None,
+                        help='自定义注释体例 JSON 配置文件 '
+                             '(见 references/citation-rules.md)')
+    parser.add_argument('--preset', default=None,
+                        help='预设注释体例: 法学引注手册 / 《法学家》《中外法学》注释体例 / 《中国法学》 / 《法商研究》 / 《法学研究》')
+    parser.add_argument('--show-style', action='store_true',
+                        help='打印当前注释体例并退出 (可与 --citation-rules/--preset 组合)')
 
     args = parser.parse_args()
+
+    # —— 打印体例并退出 (不需要输入文件) ——
+    if args.show_style:
+        if not _HAS_CITATION_RULES:
+            print('错误: 未找到 citation_rules 模块', file=sys.stderr)
+            sys.exit(1)
+        try:
+            style = load_citation_rules(args.citation_rules, preset=args.preset)
+        except (ValueError, FileNotFoundError) as e:
+            print(f'错误: {e}', file=sys.stderr)
+            sys.exit(1)
+        print(describe_style(style))
+        return
+
+    if not args.input:
+        print('错误: 请提供输入 .docx 文件路径', file=sys.stderr)
+        sys.exit(1)
 
     input_path = Path(args.input)
     if not input_path.exists():
@@ -857,6 +994,25 @@ def main():
 
     if not args.check and not args.fix:
         args.check = True  # 默认检查模式
+
+    # —— 加载注释体例 (自定义/预设/默认) ——
+    style = None
+    if args.citation_rules or args.preset:
+        if not _HAS_CITATION_RULES:
+            print('错误: 未找到 citation_rules 模块 (需与 citation_formatter.py '
+                  '同目录)', file=sys.stderr)
+            sys.exit(1)
+        try:
+            style = load_citation_rules(args.citation_rules, preset=args.preset)
+            src = args.citation_rules or f'预设 {args.preset}'
+            print(f'已加载注释体例: {src}\n')
+        except (ValueError, FileNotFoundError) as e:
+            print(f'{{"error": "{e}", "error_type": "validation", '
+                  f'"hint": "请检查注释体例配置文件格式 '
+                  f'(见 references/citation-rules.md)"}}', file=sys.stderr)
+            sys.exit(1)
+    else:
+        style = _resolve_style(None)
 
     doc = Document(str(input_path))
 
@@ -890,7 +1046,7 @@ def main():
         print('\n' + '=' * 60)
         print('自动修复引注格式')
         print('=' * 60)
-        stats = format_all_footnotes(doc, fix=True)
+        stats = format_all_footnotes(doc, fix=True, style=style)
         print(f'处理脚注: {stats["total"]} 条')
         print(f'发现问题: {stats["issues"]} 个')
         print(f'自动修复: {stats["fixed"]} 处')

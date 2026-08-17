@@ -1,0 +1,9 @@
+{
+  "_说明": "自定义格式规则示例: 复制本文件为 rules.json 后按需修改。只写要改的元素/字段, 未写的用默认规则。使用: python run_pipeline.py --input 论文.docx --rules rules.json",
+  "title":  {"size": "二号", "bold": true},
+  "h1":     {"font": "宋体", "size": "四号", "bold": true},
+  "h2":     {"font": "宋体", "size": "小四", "bold": true},
+  "h3":     {"font": "宋体", "size": "小四", "bold": false},
+  "h4":     {"font": "宋体", "size": "小四", "bold": false},
+  "body":   {"size": "小四", "line_spacing": "20磅"}
+}

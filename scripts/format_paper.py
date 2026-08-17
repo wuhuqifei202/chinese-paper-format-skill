@@ -18,6 +18,7 @@ Usage:
 """
 
 import argparse
+import os
 import re
 import sys
 import shutil
@@ -25,11 +26,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+# 确保脚本目录在 sys.path 中 — 裸 import citation_rules / citation_formatter 依赖于此
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn, nsdecls
 from docx.oxml import parse_xml
 from docx.shared import Pt
+from lxml import etree
 
 # 引注格式化模块 (可选导入)
 try:
@@ -38,6 +43,13 @@ try:
     _HAS_CITATION = True
 except ImportError:
     _HAS_CITATION = False
+
+# 注释体例模块 (可选导入)
+try:
+    from citation_rules import load_citation_rules as _load_citation_rules
+    _HAS_CITATION_RULES = True
+except ImportError:
+    _HAS_CITATION_RULES = False
 
 # ---------------------------------------------------------------------------
 # 字号常量 (单位: Pt)
@@ -87,6 +99,9 @@ _RE_LEVEL3 = re.compile(r'^\d{1,3}[\.、．]\s')
 # 疑似三级标题但后面没有空格的情况 (1.xxx → 可能是序号)
 _RE_LEVEL3_LOOSE = re.compile(r'^\d{1,3}[\.、．]\S')
 
+# 四级标题: （1）（2）… 阿拉伯数字圆括号
+_RE_LEVEL4 = re.compile(r'^（(\d{1,2})）')
+
 # 摘要/关键词检测
 _RE_ABSTRACT = re.compile(r'^[【\[]\s*摘\s*要\s*[】\]]|^摘要[：:)]|^摘要\b')
 _RE_KEYWORDS = re.compile(r'^[【\[]\s*关\s*键\s*词\s*[】\]]|^关键词[：:)]|^关键词\b')
@@ -116,6 +131,7 @@ MAX_HEADING_LEN = {
     1: 40,   # 一级标题最大字符数
     2: 50,   # 二级标题最大字符数
     3: 60,   # 三级标题最大字符数
+    4: 20,   # 四级标题最大字符数 (更严格, 避免与正文列表混淆)
 }
 
 
@@ -130,9 +146,15 @@ def detect_heading_level(text: str) -> int:
         1 — 一级标题 (一、)
         2 — 二级标题 (（一）)
         3 — 三级标题 (1. )
+        4 — 四级标题 (（1）)
     """
     if not text:
         return 0
+
+    # 四级标题: （1）（2）… 阿拉伯数字圆括号 — 仅很短时判定, 避免与正文列表混淆
+    m4 = _RE_LEVEL4.match(text)
+    if m4 and len(text) <= MAX_HEADING_LEN[4]:
+        return 4
 
     # 三级标题最容易误判 (普通数字开头), 用更严格的规则
     m3 = _RE_LEVEL3.match(text)
@@ -195,21 +217,91 @@ def apply_run_font(run, cn_font: str, en_font: str, size,
     rFonts.set(qn('w:cs'), en_font)
 
 
-def set_line_spacing(para, line_spacing: float = 1.0):
-    """设置段落行距为单倍行距, 并清除段前/段后间距."""
+def set_line_spacing(para, line_spacing=1.0):
+    """设置段落行距, 并清除段前/段后间距.
+
+    Args:
+        line_spacing: float = 倍数行距 (1.0 = 单倍);
+                      dict {'mode': 'exact', 'value': 20} = 固定 20 磅行距.
+    """
     pPr = para._p.get_or_add_pPr()
     spacing = pPr.find(qn('w:spacing'))
     if spacing is None:
         spacing = parse_xml(f'<w:spacing {nsdecls("w")} />')
-        pPr.append(spacing)
+        _insert_pPr_ordered(pPr, spacing)
 
-    # 单倍行距 = 240 twips (20 twips * 12pt * 1.0)
-    spacing.set(qn('w:line'), str(int(line_spacing * 240)))
-    spacing.set(qn('w:lineRule'), 'auto')
+    if isinstance(line_spacing, dict) and line_spacing.get('mode') == 'exact':
+        # 固定磅值行距: 1pt = 20 twips, lineRule=exact
+        spacing.set(qn('w:line'), str(int(line_spacing['value'] * 20)))
+        spacing.set(qn('w:lineRule'), 'exact')
+    else:
+        # 倍数行距: 单倍 = 240 twips (20 twips * 12pt * 1.0)
+        spacing.set(qn('w:line'), str(int(float(line_spacing) * 240)))
+        spacing.set(qn('w:lineRule'), 'auto')
+    # OOXML CT_Spacing: before 与 beforeLines 互斥 (EG_SpaceBefore choice),
+    # after 与 afterLines 同理 — 同时存在会被 Word 判为文档损坏.
+    spacing.attrib.pop(qn('w:beforeLines'), None)
+    spacing.attrib.pop(qn('w:afterLines'), None)
     spacing.set(qn('w:before'), '0')
     spacing.set(qn('w:after'), '0')
-    spacing.set(qn('w:beforeLines'), '0')
-    spacing.set(qn('w:afterLines'), '0')
+    # 属性追加顺序违反 CT_Spacing schema → Word 判损坏, 需重排
+    _reorder_attrs(spacing, _SPACING_ATTR_ORDER)
+
+
+# OOXML schema 规定的属性顺序 (CT_Ind / CT_Spacing).
+# lxml 的 Element.set() 将新属性追加到属性尾部, 与文档原有属性合并后
+# 顺序可能违反 schema (如 firstLineChars 出现在 right 之后), 新版 Word
+# 会判定文档损坏并忽略这些属性 → 正文首行缩进"看起来没生效".
+_IND_ATTR_ORDER = ('start', 'startChars', 'end', 'endChars', 'hanging',
+                   'hangingChars', 'firstLine', 'firstLineChars',
+                   'left', 'leftChars', 'right', 'rightChars')
+_SPACING_ATTR_ORDER = ('before', 'beforeLines', 'beforeAutospacing',
+                       'after', 'afterLines', 'afterAutospacing',
+                       'line', 'lineRule')
+
+
+def _reorder_attrs(el, order: tuple):
+    """按 OOXML schema 顺序重排元素属性.
+
+    未列入 order 的属性保持原相对顺序追加在尾部.
+    """
+    attrs = dict(el.attrib)
+    el.attrib.clear()
+    for key in order:
+        qkey = qn('w:' + key)
+        if qkey in attrs:
+            el.attrib[qkey] = attrs.pop(qkey)
+    for key, val in attrs.items():
+        el.attrib[key] = val
+
+
+# CT_PPr 全序 (ECMA-376 CT_PPr), 用于 pPr 子元素插入位置判定
+_CT_PPR_ORDER = ('pStyle', 'keepNext', 'keepLines', 'pageBreakBefore',
+                 'framePr', 'widowControl', 'numPr', 'suppressLineNumbers',
+                 'pBdr', 'shd', 'tabs', 'suppressAutoHyphens', 'kinsoku',
+                 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE',
+                 'autoSpaceDN', 'bidi', 'adjustRightInd', 'snapToGrid',
+                 'spacing', 'ind', 'contextualSpacing', 'mirrorIndents',
+                 'suppressOverlap', 'jc', 'textDirection', 'textAlignment',
+                 'textboxTightWrap', 'outlineLvl', 'divId', 'cnfStyle',
+                 'rPr', 'sectPr', 'pPrChange')
+
+
+def _insert_pPr_ordered(pPr, el):
+    """按 CT_PPr 全序把 el 插入 pPr 正确位置.
+
+    不能直接 pPr.append(): 若 pPr 已有 jc 等顺序靠后的元素, 新元素排到
+    其后 → pPr 元素顺序违规 → Word 判文档损坏. 也不能用 python-docx 的
+    get_or_add_ind()/get_or_add_spacing(): 其 successors 列表顺序与 XML
+    实际顺序无关, 会把元素插到 rPr 之后.
+    """
+    _POS = {name: i for i, name in enumerate(_CT_PPR_ORDER)}
+    self_pos = _POS[etree.QName(el).localname]
+    for child in pPr:
+        if _POS.get(etree.QName(child).localname, -1) > self_pos:
+            child.addprevious(el)
+            return
+    pPr.append(el)
 
 
 def set_first_line_indent(para, chars: int = 2):
@@ -218,16 +310,20 @@ def set_first_line_indent(para, chars: int = 2):
     ind = pPr.find(qn('w:ind'))
     if ind is None:
         ind = parse_xml(f'<w:ind {nsdecls("w")} />')
-        pPr.append(ind)
+        _insert_pPr_ordered(pPr, ind)
 
     ind.set(qn('w:firstLineChars'), str(chars * 100))
     ind.set(qn('w:leftChars'), '0')
-    ind.set(qn('w:hangingChars'), '0')
+    # firstLineChars 与 hanging/hangingChars 互斥 (EG_HangingIndent choice),
+    # 同时存在会被 Word 判为文档损坏 — 必须清除 (含原文继承的 hangingChars)
+    ind.attrib.pop(qn('w:hangingChars'), None)
     # 清除绝对数值, 避免冲突
     for attr in ('w:firstLine', 'w:left', 'w:hanging'):
         val = ind.get(qn(attr))
         if val is not None:
             del ind.attrib[qn(attr)]
+    # 属性追加顺序违反 CT_Ind schema → Word 判损坏, 需重排
+    _reorder_attrs(ind, _IND_ATTR_ORDER)
 
 
 def remove_first_line_indent(para):
@@ -256,6 +352,58 @@ def clear_paragraph_runs(para):
         para._p.append(r)
 
 
+def _drop_unused_numbering(doc):
+    """移除无引用的 numbering 部件.
+
+    源 .doc 经 Word 转换生成的 docx 常带空 numbering.xml (无 abstractNum/num
+    定义), 且 document.xml/styles.xml 中无 numPr/numId 引用. 空部件 + 关系
+    会使 Word 判定"文档已损坏"。有编号引用时保留 (python-docx 不管理
+    numbering 部件, 此时不处理).
+    """
+    try:
+        refs = [doc.element.xml]
+        if doc.styles is not None:
+            refs.append(doc.styles.element.xml)
+        if any('numPr' in t or 'numId' in t for t in refs):
+            return
+        for rel in list(doc.part.rels.values()):
+            if rel.reltype.endswith('/numbering'):
+                doc.part.drop_rel(rel.rId)
+    except Exception:
+        pass
+
+
+def _dedupe_footnotes_rel(doc):
+    """去重指向同一 footnotes part 的重复关系.
+
+    不同阶段 (Word .doc 转换 / 引注段转脚注 / md2docx 注入) 可能各自添加一条
+    footnotes 关系 (如 rId5 与 rIdFootnotes 同指 footnotes.xml). 同一 part
+    存在多条指向它的关系会被 Word 判为"文档已损坏" — 仅保留一条, 并同步
+    改写 document.xml 中引用被删 Id 的 r:id 属性.
+    """
+    FOOTNOTES_TYPE = ('http://schemas.openxmlformats.org/officeDocument/'
+                      '2006/relationships/footnotes')
+    fn_rels = [rel for rel in doc.part.rels.values()
+               if rel.reltype == FOOTNOTES_TYPE]
+    if len(fn_rels) <= 1:
+        return
+    keep = fn_rels[0]
+    drop_ids = {rel.rId for rel in fn_rels[1:]}
+
+    # 改写 document.xml 中对被删 Id 的引用 (r:id 位于 officeDocument
+    # relationships 命名空间, 与 .rels 文件的 package 命名空间不同)
+    from docx.oxml.ns import qn as _qn
+    _OFF_RID = ('{http://schemas.openxmlformats.org/officeDocument/'
+                '2006/relationships}id')
+    for el in doc.element.iter():
+        rid = el.get(_OFF_RID)
+        if rid in drop_ids:
+            el.set(_OFF_RID, keep.rId)
+
+    for rel in fn_rels[1:]:
+        doc.part.drop_rel(rel.rId)
+
+
 def _get_footnotes_xml(doc) -> Optional[object]:
     """获取文档的脚注 XML 根元素."""
     FOOTNOTE_REL = ('http://schemas.openxmlformats.org/officeDocument/'
@@ -277,8 +425,18 @@ def _get_footnotes_part_obj(doc):
     return None
 
 
-def format_footnotes(doc):
-    """格式化现有脚注: 宋体小五号, 单倍行距, 每页重新编号, 数字编号."""
+def format_footnotes(doc, rules: dict = None):
+    """格式化现有脚注, 每页重新编号, 数字编号.
+
+    Args:
+        doc: Document 对象.
+        rules: 自定义规则表 (footnote 元素); None = 默认规则.
+    """
+    if rules is None:
+        from rules import DEFAULT_RULES
+        rules = DEFAULT_RULES
+    fn_rule = rules['footnote']
+
     fn_xml = _get_footnotes_xml(doc)
     fn_part_obj = _get_footnotes_part_obj(doc)
     if fn_xml is None:
@@ -321,7 +479,7 @@ def format_footnotes(doc):
             continue  # 跳过 -1 (分隔线) 和 0 (分隔线续)
 
         for p_elem in fn_elem.findall(qn('w:p')):
-            _format_footnote_paragraph(p_elem)
+            _format_footnote_paragraph(p_elem, fn_rule)
 
     # 将修改写回 Part (通过 citation_formatter 的统一写入函数)
     if fn_part_obj is not None:
@@ -335,8 +493,13 @@ def format_footnotes(doc):
                 fn_xml, xml_declaration=True, encoding='UTF-8', standalone=True)
 
 
-def _format_footnote_paragraph(p_elem):
-    """格式化单个脚注段落 XML 元素."""
+def _format_footnote_paragraph(p_elem, rule: dict):
+    """格式化单个脚注段落 XML 元素.
+
+    Args:
+        p_elem: 脚注段落 XML 元素.
+        rule: footnote 元素规则 (load_rules 输出).
+    """
     # 行距
     pPr = p_elem.find(qn('w:pPr'))
     if pPr is None:
@@ -346,13 +509,24 @@ def _format_footnote_paragraph(p_elem):
     spacing = pPr.find(qn('w:spacing'))
     if spacing is None:
         spacing = parse_xml(f'<w:spacing {nsdecls("w")} />')
-        pPr.append(spacing)
-    spacing.set(qn('w:line'), '240')   # 单倍行距
-    spacing.set(qn('w:lineRule'), 'auto')
+        _insert_pPr_ordered(pPr, spacing)
+    ls = rule['line_spacing']
+    if isinstance(ls, dict) and ls['mode'] == 'exact':
+        spacing.set(qn('w:line'), str(int(ls['value'] * 20)))
+        spacing.set(qn('w:lineRule'), 'exact')
+    else:
+        spacing.set(qn('w:line'), str(int(float(ls) * 240)))
+        spacing.set(qn('w:lineRule'), 'auto')
+    # beforeLines/afterLines 与 before/after 互斥 (EG_SpaceBefore choice), 先清除
+    spacing.attrib.pop(qn('w:beforeLines'), None)
+    spacing.attrib.pop(qn('w:afterLines'), None)
     spacing.set(qn('w:before'), '0')
     spacing.set(qn('w:after'), '0')
+    # 属性追加顺序违反 CT_Spacing schema → Word 判损坏, 需重排
+    _reorder_attrs(spacing, _SPACING_ATTR_ORDER)
 
-    # 每个 run: 宋体小五号 (9pt = 18 half-pt)
+    # 每个 run: 按规则 (字号 half-points = 磅值 * 2)
+    size_hp = str(int(rule['size'] * 2))
     for r_elem in p_elem.findall(qn('w:r')):
         rPr = r_elem.find(qn('w:rPr'))
         if rPr is None:
@@ -364,22 +538,22 @@ def _format_footnote_paragraph(p_elem):
         if sz is None:
             sz = parse_xml(f'<w:sz {nsdecls("w")} />')
             rPr.append(sz)
-        sz.set(qn('w:val'), '18')
+        sz.set(qn('w:val'), size_hp)
 
         szCs = rPr.find(qn('w:szCs'))
         if szCs is None:
             szCs = parse_xml(f'<w:szCs {nsdecls("w")} />')
             rPr.append(szCs)
-        szCs.set(qn('w:val'), '18')
+        szCs.set(qn('w:val'), size_hp)
 
         # 字体
         rFonts = rPr.find(qn('w:rFonts'))
         if rFonts is None:
             rFonts = parse_xml(f'<w:rFonts {nsdecls("w")} />')
             rPr.insert(0, rFonts)
-        rFonts.set(qn('w:eastAsia'), FONT_SONG)
-        rFonts.set(qn('w:ascii'), FONT_EN)
-        rFonts.set(qn('w:hAnsi'), FONT_EN)
+        rFonts.set(qn('w:eastAsia'), rule['font'])
+        rFonts.set(qn('w:ascii'), rule['font'])
+        rFonts.set(qn('w:hAnsi'), rule['font'])
 
 
 def detect_title_range(paragraphs) -> Tuple[int, int]:
@@ -387,12 +561,15 @@ def detect_title_range(paragraphs) -> Tuple[int, int]:
 
     第一个非空段落视为论文题目。若紧随的段落也为非空且非标题,
     则可能是副标题或作者信息, 一并纳入题目区域。
+    摘要/关键词属元数据, 不占用作者行上限, 持续并入区域 (修复 BUG-008:
+    题目+作者行后摘要/关键词被排除在区域外, 被误判为正文).
 
     Returns:
         (start_index, end_index_exclusive) — 题目区域在 paragraphs 中的范围.
     """
     start = -1
     end = 0
+    extra_count = 0  # 已纳入的非元数据附加段数 (副标题/作者行, 上限 1)
 
     for i, para in enumerate(paragraphs):
         text = para.text.strip()
@@ -413,34 +590,84 @@ def detect_title_range(paragraphs) -> Tuple[int, int]:
             end = i
             break
 
-        # 非空非标题可能是副标题/作者, 纳入
-        # 摘要和关键词属于元数据，不计入上限
-        ak = is_abstract_or_keywords(text)
-        if ak is None:
+        # 摘要/关键词属元数据: 不占用作者行上限, 持续并入区域
+        if is_abstract_or_keywords(text) is not None:
             end = i + 1
-            if (end - start) >= 2:
-                break
+            continue
+
+        # 非元数据段落: 可能是副标题/作者行, 最多纳入 1 段
+        if extra_count >= 1:
+            end = i
+            break
+        extra_count += 1
+        end = i + 1
 
     return (start, end)
 
 
+_ALIGN_MAP = {
+    'center': WD_ALIGN_PARAGRAPH.CENTER,
+    'left': WD_ALIGN_PARAGRAPH.LEFT,
+    'right': WD_ALIGN_PARAGRAPH.RIGHT,
+    'justify': WD_ALIGN_PARAGRAPH.JUSTIFY,
+}
+
+
+def _apply_para_format(para, rule: dict, body_indent: int = 2):
+    """按规则表应用段落格式 (对齐/行距/缩进/字体).
+
+    Args:
+        para: 段落对象.
+        rule: 元素规则 dict (rules.py 的 load_rules 输出, 字段齐全).
+        body_indent: 正文缩进字符数; 仅当 rule['indent'] 为 None 时生效
+                     (body 元素默认 None = 由该参数决定).
+    """
+    set_alignment(para, _ALIGN_MAP[rule['align']])
+    set_line_spacing(para, rule['line_spacing'])
+
+    indent = rule['indent']
+    if indent is None:
+        indent = body_indent
+    if indent and indent > 0:
+        set_first_line_indent(para, chars=indent)
+    else:
+        remove_first_line_indent(para)
+
+    for run in para.runs:
+        apply_run_font(run, rule['font'], FONT_EN,
+                       Pt(rule['size']), bold=rule['bold'])
+
+
 def format_document(input_path: str, output_path: str,
-                   body_indent: int = 0) -> dict:
+                    body_indent: int = 2, rules: dict = None,
+                    fix_citations: bool = False,
+                    citation_rules: dict = None) -> dict:
     """主格式化函数.
 
     Args:
         input_path: 输入 .docx 文件路径.
         output_path: 输出 .docx 文件路径.
-        body_indent: 正文字符缩进数 (0=不缩进, 2=首行缩进2字符).
+        body_indent: 正文字符缩进数 (默认2, 0=不缩进).
+        rules: 自定义格式规则表 (rules.py load_rules 的输出);
+               None = 使用默认规则 (skill 预设格式).
+        fix_citations: 是否同时修复引注格式;
+               True 时一步完成排版+引注修复, 统计写入 stats['citation_fixes'].
+        citation_rules: 注释体例 dict (citation_rules.load_citation_rules 输出);
+               None = 默认体例.
 
     Returns:
-        统计信息 dict: {title, headings_l1, headings_l2, headings_l3,
-                        body, footnotes, errors}
+        统计信息 dict: {title, headings_l1..l4, body, footnotes,
+                        citation_fixes?, punct_fixes?, errors}
     """
+    if rules is None:
+        from rules import DEFAULT_RULES
+        rules = DEFAULT_RULES
+
     stats = {
         'title': 0, 'abstract': 0, 'keywords': 0,
         'headings_l1': 0, 'headings_l2': 0,
-        'headings_l3': 0, 'body': 0, 'footnotes': 0, 'errors': 0,
+        'headings_l3': 0, 'headings_l4': 0,
+        'body': 0, 'footnotes': 0, 'errors': 0,
     }
 
     doc = Document(input_path)
@@ -471,83 +698,42 @@ def format_document(input_path: str, output_path: str,
             ak_type = is_abstract_or_keywords(text)
 
             if is_first_title:
-                # 论文题目: 黑体 四号 居中
-                set_alignment(para, WD_ALIGN_PARAGRAPH.CENTER)
-                set_line_spacing(para)
-                remove_first_line_indent(para)
-                for run in para.runs:
-                    apply_run_font(run, FONT_HEI, FONT_EN,
-                                  SIZE_SIHAO, bold=False)
+                # 论文题目
+                _apply_para_format(para, rules['title'], body_indent)
                 stats['title'] += 1
             elif ak_type == 'abstract':
-                # 摘要: 楷体 小四 单倍行距
-                set_alignment(para, WD_ALIGN_PARAGRAPH.LEFT)
-                set_line_spacing(para)
-                remove_first_line_indent(para)
-                for run in para.runs:
-                    apply_run_font(run, FONT_KAI, FONT_EN,
-                                  SIZE_XIAOSI, bold=False)
+                # 摘要
+                _apply_para_format(para, rules['abstract'], body_indent)
                 stats.setdefault('abstract', 0)
                 stats['abstract'] += 1
             elif ak_type == 'keywords':
-                # 关键词: 楷体 小四 单倍行距
-                set_alignment(para, WD_ALIGN_PARAGRAPH.LEFT)
-                set_line_spacing(para)
-                remove_first_line_indent(para)
-                for run in para.runs:
-                    apply_run_font(run, FONT_KAI, FONT_EN,
-                                  SIZE_XIAOSI, bold=False)
+                # 关键词
+                _apply_para_format(para, rules['keywords'], body_indent)
                 stats.setdefault('keywords', 0)
                 stats['keywords'] += 1
             else:
-                # 其他标题区域内容 (作者名等): 保持黑体四号居中
-                set_alignment(para, WD_ALIGN_PARAGRAPH.CENTER)
-                set_line_spacing(para)
-                remove_first_line_indent(para)
-                for run in para.runs:
-                    apply_run_font(run, FONT_HEI, FONT_EN,
-                                  SIZE_SIHAO, bold=False)
+                # 其他标题区域内容 (作者名等)
+                _apply_para_format(para, rules['author'], body_indent)
             continue
 
         # 标题 / 正文
         level = detect_heading_level(text)
 
         if level == 1:
-            set_alignment(para, WD_ALIGN_PARAGRAPH.CENTER)
-            set_line_spacing(para)
-            remove_first_line_indent(para)
-            for run in para.runs:
-                apply_run_font(run, FONT_SONG, FONT_EN,
-                              SIZE_XIAOSI, bold=True)
+            _apply_para_format(para, rules['h1'], body_indent)
             stats['headings_l1'] += 1
-
         elif level == 2:
-            set_alignment(para, WD_ALIGN_PARAGRAPH.LEFT)
-            set_line_spacing(para)
-            set_first_line_indent(para, chars=2)
-            for run in para.runs:
-                apply_run_font(run, FONT_KAI, FONT_EN,
-                              SIZE_XIAOSI, bold=True)
+            _apply_para_format(para, rules['h2'], body_indent)
             stats['headings_l2'] += 1
-
         elif level == 3:
-            set_alignment(para, WD_ALIGN_PARAGRAPH.LEFT)
-            set_line_spacing(para)
-            set_first_line_indent(para, chars=2)
-            for run in para.runs:
-                apply_run_font(run, FONT_SONG, FONT_EN,
-                              SIZE_WUHAO, bold=True)
+            _apply_para_format(para, rules['h3'], body_indent)
             stats['headings_l3'] += 1
-
+        elif level == 4:
+            _apply_para_format(para, rules['h4'], body_indent)
+            stats['headings_l4'] += 1
         else:
             # 正文
-            set_alignment(para, WD_ALIGN_PARAGRAPH.LEFT)
-            set_line_spacing(para)
-            if body_indent > 0:
-                set_first_line_indent(para, chars=body_indent)
-            for run in para.runs:
-                apply_run_font(run, FONT_SONG, FONT_EN,
-                              SIZE_WUHAO, bold=False)
+            _apply_para_format(para, rules['body'], body_indent)
             stats['body'] += 1
 
     # —— 格式化脚注 ——
@@ -557,16 +743,21 @@ def format_document(input_path: str, output_path: str,
             fn_count = len([e for e in fn_xml.findall(qn('w:footnote'))
                            if e.get(qn('w:id')) and int(e.get(qn('w:id'))) > 0])
             stats['footnotes'] = fn_count
-            format_footnotes(doc)
+            format_footnotes(doc, rules=rules)
     except Exception as e:
         print(f"  ⚠ 脚注处理异常: {e}")
         stats['errors'] += 1
 
-    # —— 标点规范化 (正文) ——
+    # —— 标点规范化 (正文/摘要等, 跳过题目与各级标题) ——
     try:
         from citation_formatter import normalize_chinese_punctuation
         punct_fixes = 0
-        for para in doc.paragraphs:
+        for i, para in enumerate(paragraphs):
+            text = para.text.strip()
+            if not text:
+                continue
+            if i == title_start or detect_heading_level(text) > 0:
+                continue  # 题目/各级标题: 不修改标点
             for run in para.runs:
                 if run.text:
                     new_text = normalize_chinese_punctuation(run.text)
@@ -578,7 +769,24 @@ def format_document(input_path: str, output_path: str,
     except ImportError:
         pass
 
+    # —— 引注格式修复 (可选, 按注释体例) ——
+    if fix_citations:
+        try:
+            from citation_formatter import format_all_footnotes
+            cstats = format_all_footnotes(doc, fix=True, style=citation_rules)
+            if cstats.get('fixed', 0) > 0:
+                stats['citation_fixes'] = cstats['fixed']
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"  ⚠ 引注修复异常: {e}")
+            stats['errors'] += 1
+
     # —— 保存 ——
+    # 清理 Word 转换遗留的空 numbering 部件 (否则 Word 判文档损坏)
+    _drop_unused_numbering(doc)
+    # 去重指向同一 footnotes part 的重复关系 (否则 Word 判文档损坏)
+    _dedupe_footnotes_rel(doc)
     doc.save(output_path)
     return stats
 
@@ -629,7 +837,8 @@ def backup_file(filepath: str) -> str:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """构建命令行解析器 (提取为独立函数, 便于测试默认值)."""
     parser = argparse.ArgumentParser(
         description='中文学术论文格式规范化工具',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -650,8 +859,8 @@ def main():
                         help='批量处理文件夹中所有 .docx 文件')
     parser.add_argument('--no-backup', action='store_true',
                         help='覆盖时不自动备份')
-    parser.add_argument('--body-indent', type=int, default=0,
-                        help='正文首行缩进字符数 (默认0, 推荐2)')
+    parser.add_argument('--body-indent', type=int, default=2,
+                        help='正文首行缩进字符数 (默认2, 0=不缩进)')
     parser.add_argument('--check-prereqs', action='store_true',
                         help='检查依赖和环境')
     parser.add_argument('--diagnostics', action='store_true',
@@ -660,7 +869,59 @@ def main():
                         help='自动修复脚注中的引注格式 (依据《法学引注手册》)')
     parser.add_argument('--check-citations', action='store_true',
                         help='仅检查脚注引注格式, 不修改')
+    parser.add_argument('--rules', default=None,
+                        help='自定义格式规则 JSON 配置文件 '
+                             '(如 {"title": {"size": "二号", "bold": true}}, 见 references/custom-rules.md)')
+    parser.add_argument('--citation-rules', default=None,
+                        help='自定义注释体例 JSON 配置文件 '
+                             '(见 references/citation-rules.md)')
+    parser.add_argument('--preset', default=None,
+                        help='预设注释体例: 法学引注手册 / 《法学家》《中外法学》注释体例 / 《中国法学》 / 《法商研究》 / 《法学研究》')
 
+    return parser
+
+
+def load_rules_or_exit(config_path):
+    """加载自定义规则, 出错时打印友好错误并退出 (返回 None = 用默认规则)."""
+    if not config_path:
+        return None
+    try:
+        from rules import load_rules
+        rules = load_rules(config_path)
+        print(f"已加载自定义格式规则: {config_path}")
+        return rules
+    except (ValueError, FileNotFoundError) as e:
+        print(f'{{"error": "{e}", "error_type": "validation", '
+              f'"hint": "请检查规则配置文件格式 (见 references/custom-rules.md)"}}',
+              file=sys.stderr)
+        sys.exit(1)
+
+
+def load_citation_rules_or_exit(config_path, preset=None):
+    """加载自定义注释体例, 出错时打印友好错误并退出 (返回 None = 用默认体例)."""
+    if not config_path and not preset:
+        return None
+    if not _HAS_CITATION_RULES:
+        print('{"error": "未找到 citation_rules 模块", '
+              '"error_type": "runtime", '
+              '"hint": "请确保 citation_rules.py 与 format_paper.py 同目录"}',
+              file=sys.stderr)
+        sys.exit(1)
+    try:
+        style = _load_citation_rules(config_path, preset=preset)
+        src = config_path or f'预设 {preset}'
+        print(f"已加载注释体例: {src}")
+        return style
+    except (ValueError, FileNotFoundError) as e:
+        print(f'{{"error": "{e}", "error_type": "validation", '
+              f'"hint": "请检查注释体例配置文件格式 '
+              f'(见 references/citation-rules.md)"}}',
+              file=sys.stderr)
+        sys.exit(1)
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     # —— 诊断模式 ——
@@ -735,6 +996,13 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
+    # —— 加载自定义格式规则 ——
+    rules = load_rules_or_exit(args.rules)
+
+    # —— 加载自定义注释体例 ——
+    citation_rules = load_citation_rules_or_exit(args.citation_rules,
+                                                  preset=args.preset)
+
     # —— 批量模式 ——
     if args.batch:
         if not input_path.is_dir():
@@ -758,15 +1026,13 @@ def main():
                 bkp = backup_file(str(f))
                 print(f"  {f.name}  (备份: {Path(bkp).name})")
                 stats = format_document(str(f), str(f),
-                                        body_indent=args.body_indent)
+                                        body_indent=args.body_indent,
+                                        rules=rules,
+                                        fix_citations=args.fix_citations,
+                                        citation_rules=citation_rules)
                 _print_stats(stats)
-
-                if args.fix_citations and _HAS_CITATION:
-                    doc = Document(str(f))
-                    cstats = format_all_footnotes(doc, fix=True)
-                    doc.save(str(f))
-                    if cstats['fixed'] > 0:
-                        print(f"    引注修复: {cstats['fixed']} 处")
+                if stats.get('citation_fixes', 0) > 0:
+                    print(f"    引注修复: {stats['citation_fixes']} 处")
 
                 total_stats['ok'] += 1
             except Exception as e:
@@ -784,7 +1050,7 @@ def main():
         print(f"题目: {result['title'][:80] if result['title'] else '(未检测到)'}")
         print(f"标题 ({len(result['headings'])} 个):")
         for level, txt in result['headings']:
-            prefix = {1: '一、', 2: '（一）', 3: '1. '}.get(level, '?')
+            prefix = {1: '一、', 2: '（一）', 3: '1. ', 4: '（1）'}.get(level, '?')
             print(f"  L{level} [{prefix}] {txt}")
         print(f"脚注: {'有' if result['has_footnotes'] else '无'}")
         return
@@ -816,16 +1082,21 @@ def main():
     try:
         print(f"格式化: {input_path}")
         stats = format_document(str(input_path), output_path,
-                                body_indent=args.body_indent)
+                                body_indent=args.body_indent,
+                                rules=rules,
+                                fix_citations=args.fix_citations,
+                                citation_rules=citation_rules)
         print(f"输出: {output_path}")
         _print_stats(stats)
+        if stats.get('citation_fixes', 0) > 0:
+            print(f"    引注修复: {stats['citation_fixes']} 处")
 
-        # —— 引注格式检查和修复 ——
-        if args.check_citations or args.fix_citations:
+        # —— 引注格式检查 (只读) ——
+        if args.check_citations:
             if not _HAS_CITATION:
                 print("\n⚠ 引注格式化模块未找到, 请确保 citation_formatter.py 在同一目录")
             else:
-                _run_citation_checks(output_path, fix=args.fix_citations)
+                _run_citation_checks(output_path, fix=False, style=citation_rules)
 
         print("✓ 完成")
     except Exception as e:
@@ -835,19 +1106,18 @@ def main():
         sys.exit(1)
 
 
-def _run_citation_checks(filepath: str, fix: bool = False):
+def _run_citation_checks(filepath: str, fix: bool = False, style=None):
     """运行引注格式检查/修复."""
     doc = Document(filepath)
     if fix:
         print("\n🔧 修复引注格式...")
-        cstats = format_all_footnotes(doc, fix=True)
+        cstats = format_all_footnotes(doc, fix=True, style=style)
         doc.save(filepath)
         print(f"  检查脚注: {cstats['total']} 条")
-        print(f"  发现问题: {cstats['issues']} 个")
         print(f"  自动修复: {cstats['fixed']} 处")
-        unfixed = cstats['issues'] - cstats['fixed']
-        if unfixed > 0:
-            print(f"  ⚠ {unfixed} 个问题需手动处理")
+        print(f"  剩余问题: {cstats['issues']} 个")
+        if cstats['issues'] > 0:
+            print(f"  ⚠ {cstats['issues']} 个问题需手动处理")
     else:
         print("\n📋 检查引注格式...")
         footnotes = extract_footnotes(doc)

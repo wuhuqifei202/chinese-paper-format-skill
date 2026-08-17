@@ -21,16 +21,16 @@ GOLDEN_DIR = SKILL_DIR / 'evals' / 'golden'
 # ── 每个 golden case 的定义 ──────────────────────────────────────────────
 GOLDEN_CASES = [
     {
-        'id': '担保型以物抵债',
-        'input': GOLDEN_DIR / '担保型以物抵债' / 'input.docx',
-        'expected': GOLDEN_DIR / '担保型以物抵债' / 'expected.docx',
+        'id': '合同无效',
+        'input': GOLDEN_DIR / '合同无效' / 'input.docx',
+        'expected': GOLDEN_DIR / '合同无效' / 'expected.docx',
         'body_indent': 2,
         'fix_citations': True,
     },
     {
-        'id': '竞业限制',
-        'input': GOLDEN_DIR / '竞业限制' / 'input.docx',
-        'expected': GOLDEN_DIR / '竞业限制' / 'expected.docx',
+        'id': '认罪认罚',
+        'input': GOLDEN_DIR / '认罪认罚' / 'input.docx',
+        'expected': GOLDEN_DIR / '认罪认罚' / 'expected.docx',
         'body_indent': 2,
         'fix_citations': True,
     },

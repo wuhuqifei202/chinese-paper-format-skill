@@ -71,21 +71,28 @@ def _inject_footnotes(docx_bytes: bytes, footnote_xml_elements: list) -> bytes:
 
                 elif item.filename == 'word/_rels/document.xml.rels':
                     rels_xml = etree.fromstring(data)
-                    fn_rel = etree.SubElement(rels_xml, f'{{{REL}}}Relationship')
-                    fn_rel.set('Id', 'rIdFootnotes')
-                    fn_rel.set('Type', FOOTNOTE_REL)
-                    fn_rel.set('Target', 'footnotes.xml')
+                    existing = [r for r in rels_xml
+                                if r.get('Type') == FOOTNOTE_REL]
+                    if not existing:  # 查重: 重复 rel → Word 判损坏
+                        fn_rel = etree.SubElement(rels_xml, f'{{{REL}}}Relationship')
+                        fn_rel.set('Id', 'rIdFootnotes')
+                        fn_rel.set('Type', FOOTNOTE_REL)
+                        fn_rel.set('Target', 'footnotes.xml')
                     data = etree.tostring(rels_xml, xml_declaration=True,
                                           encoding='UTF-8', standalone=True)
+
+                elif item.filename in ('[Content_Types].xml', 'word/footnotes.xml'):
+                    continue  # 末尾统一写入, 避免 Duplicate name 警告
 
                 zout.writestr(item, data)
 
             # Build footnotes.xml
             fns_root = etree.Element(f'{{{WML}}}footnotes',
                                       nsmap={'w': WML})
-            # Separator footnotes
+            # Separator footnotes (必须带 w:type, 否则 Word 按普通脚注解析 id=-1 → 损坏)
             for sep_id, sep_tag in [('-1', 'separator'), ('0', 'continuationSeparator')]:
                 sep = etree.SubElement(fns_root, f'{{{WML}}}footnote')
+                sep.set(f'{{{WML}}}type', sep_tag)
                 sep.set(f'{{{WML}}}id', sep_id)
                 sp = etree.SubElement(sep, f'{{{WML}}}p')
                 sr = etree.SubElement(sp, f'{{{WML}}}r')
@@ -131,9 +138,9 @@ def minimal_docx_path(tmp_path):
 def docx_with_abstract(tmp_path):
     """Create a .docx with abstract and keywords."""
     doc = Document()
-    doc.add_paragraph('担保型以物抵债规则适用研究')
-    doc.add_paragraph('【摘要】本文研究了以物抵债的法律适用问题。')
-    doc.add_paragraph('【关键词】以物抵债；让与担保；强制清算')
+    doc.add_paragraph('合同解除权行使规则研究')
+    doc.add_paragraph('【摘要】本文研究了合同解除权的行使要件与法律效果。')
+    doc.add_paragraph('【关键词】合同解除权；解除条件；法律效果')
     doc.add_paragraph('一、绪论')
     doc.add_paragraph('这是正文内容。')
 
@@ -156,8 +163,8 @@ def docx_with_footnotes(tmp_path):
     doc.save(buf)
     raw = buf.getvalue()
 
-    fn1 = _build_footnote(1, '王利明， 《侵权责任法研究》, 中国人民大学出版社 2016 年, 第 125 页.')
-    fn2 = _build_footnote(2, '张新宝：《侵权法》，中国人民大学出版社 2010 年版，p.89.')
+    fn1 = _build_footnote(1, '示例学者， 《示例法学研究》, 示例出版社 2020 年, 第 125 页.')
+    fn2 = _build_footnote(2, '示例学者：《示例法学通论》，示例出版社 2019 年版，p.89.')
     fn3 = _build_footnote(3, '《民法典》第68条。')
 
     modified = _inject_footnotes(raw, [fn1, fn2, fn3])
@@ -180,13 +187,73 @@ def docx_with_legal_citations(tmp_path):
     doc.save(buf)
     raw = buf.getvalue()
 
-    fn1 = _build_footnote(1, '《国务院关于建立农村最低生活保障制度的通知》，国发[2007]19号。')
-    fn2 = _build_footnote(2, '田永诉北京科技大学案，北京市海淀区人民法院[1998]海行初字第142号行政判决书。')
-    fn3 = _build_footnote(3, '《最高人民法院关于适用〈行政诉讼法〉的解释》，法释[2018]1号，第100条。')
+    fn1 = _build_footnote(1, '《示例规范性文件》，示例发[2020]19号。')
+    fn2 = _build_footnote(2, '示例案例，示例市人民法院[2021]示例初字第142号民事判决书。')
+    fn3 = _build_footnote(3, '《示例司法解释》，示例发[2018]1号，第100条。')
 
     modified = _inject_footnotes(raw, [fn1, fn2, fn3])
 
     path = str(tmp_path / 'with_legal.docx')
+    with open(path, 'wb') as f:
+        f.write(modified)
+    return path
+
+
+@pytest.fixture
+def docx_with_author_line(tmp_path):
+    """题目 + 作者行 + 摘要/关键词 (复现 BUG-008: 作者行后摘要被误判为正文)."""
+    doc = Document()
+    doc.add_paragraph('算法歧视的法律规制研究')
+    doc.add_paragraph('人工智能与法律的交叉研究课题组')
+    doc.add_paragraph('【摘要】算法歧视是人工智能治理面临的核心问题之一。')
+    doc.add_paragraph('【关键词】算法歧视；算法治理')
+    doc.add_paragraph('一、问题的提出')
+    doc.add_paragraph('算法在信贷、招聘等领域的应用带来了歧视风险。')
+
+    path = str(tmp_path / 'with_author_line.docx')
+    doc.save(path)
+    return path
+
+
+@pytest.fixture
+def docx_with_missing_year(tmp_path):
+    """脚注出版社缺"年版" (复现 T05 fn4)."""
+    doc = Document()
+    doc.add_paragraph('论网络服务提供者的注意义务')
+    doc.add_paragraph('一、注意义务的判断标准')
+    doc.add_paragraph('网络服务提供者的注意义务应当综合判断。')
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    raw = buf.getvalue()
+
+    fn1 = _build_footnote(1, '示例学者：《示例法学总论》，示例出版社 2017 年')
+
+    modified = _inject_footnotes(raw, [fn1])
+
+    path = str(tmp_path / 'with_missing_year.docx')
+    with open(path, 'wb') as f:
+        f.write(modified)
+    return path
+
+
+@pytest.fixture
+def docx_with_trailing_period(tmp_path):
+    """脚注终端英文句号 (复现 T10 fn1)."""
+    doc = Document()
+    doc.add_paragraph('算法歧视的法律规制研究')
+    doc.add_paragraph('一、问题的提出')
+    doc.add_paragraph('算法在信贷领域的应用带来了歧视风险。')
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    raw = buf.getvalue()
+
+    fn1 = _build_footnote(1, '参见示例学者：《示例算法法学》，载《示例法学研究》2019年第4期，第50页.')
+
+    modified = _inject_footnotes(raw, [fn1])
+
+    path = str(tmp_path / 'with_trailing_period.docx')
     with open(path, 'wb') as f:
         f.write(modified)
     return path

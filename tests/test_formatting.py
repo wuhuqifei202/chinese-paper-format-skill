@@ -5,7 +5,7 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 
-from format_paper import format_document
+from format_paper import build_parser, format_document
 
 
 def _get_run_font(run):
@@ -187,8 +187,8 @@ class TestBodyFormatting:
                 assert _has_indent(p), 'Body should have indent with --body-indent 2'
                 return
 
-    def test_body_indent_not_applied(self, minimal_docx_path, tmp_path):
-        """Default (no --body-indent) should NOT indent body."""
+    def test_body_indent_explicit_zero(self, minimal_docx_path, tmp_path):
+        """Explicit body_indent=0 should NOT indent body."""
         out = str(tmp_path / 'out.docx')
         format_document(minimal_docx_path, out, body_indent=0)
 
@@ -196,13 +196,49 @@ class TestBodyFormatting:
         for p in doc.paragraphs:
             if '正文内容' in p.text:
                 assert not _has_indent(p), \
-                    'Body should NOT have indent without --body-indent'
+                    'Body should NOT have indent with body_indent=0'
                 return
+
+    def test_cli_default_body_indent(self):
+        """CLI --body-indent default should be 2 (consistent with run_pipeline)."""
+        parser = build_parser()
+        assert parser.get_default('body_indent') == 2
+
+    def test_format_document_default_body_indent(self):
+        """format_document default body_indent should be 2 (consistent with CLI)."""
+        import inspect
+        sig = inspect.signature(format_document)
+        assert sig.parameters['body_indent'].default == 2
 
 
 @pytest.mark.integration
 class TestAbstractFormatting:
     """Verify abstract and keywords formatting."""
+
+    def test_abstract_after_author_line(self, docx_with_author_line, tmp_path):
+        """BUG-008: 题目+作者行后, 摘要/关键词仍应识别为楷体 12pt 无缩进,
+        作者行保持黑体四号居中."""
+        out = str(tmp_path / 'out.docx')
+        format_document(docx_with_author_line, out)
+
+        doc = Document(out)
+        for p in doc.paragraphs:
+            text = p.text.strip()
+            if '【摘要】' in text or '【关键词】' in text:
+                info = _get_paragraph_font(p)
+                assert info['eastAsia'] == '楷体', \
+                    f'摘要/关键词应为楷体, got {info}'
+                assert info['size_pt'] == 12.0
+                assert not info['bold']
+                assert _get_alignment(p) == 'LEFT'
+                assert not _has_indent(p), '摘要/关键词不应有首行缩进'
+            elif '课题组' in text:
+                # 作者行: 黑体四号居中 (题目区域成员)
+                info = _get_paragraph_font(p)
+                assert info['eastAsia'] == '黑体', \
+                    f'作者行应为黑体, got {info}'
+                assert info['size_pt'] == 14.0
+                assert _get_alignment(p) == 'CENTER'
 
     def test_abstract_kaiti(self, docx_with_abstract, tmp_path):
         """Abstract should be 楷体, 12pt, no bold."""
@@ -259,7 +295,7 @@ class TestTitleRange:
         doc.add_paragraph('笔记2：损失界定')            # → subtitle (title area)
         doc.add_paragraph('笔记3：违约金与解除权')      # → body (beyond limit)
         doc.add_paragraph('')                           # blank
-        doc.add_paragraph('竞业限制合同的违约金调整规则研究')  # → body
+        doc.add_paragraph('合同违约金调整规则研究')  # → body
         doc.add_paragraph('')
         doc.add_paragraph('一、引言')
         doc.add_paragraph('正文内容。')

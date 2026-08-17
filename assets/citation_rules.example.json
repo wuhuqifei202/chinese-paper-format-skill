@@ -1,0 +1,22 @@
+{
+  "_说明": "自定义注释体例示例：只写要改的部分，未写出的用默认（法学引注手册）。用户用文字提出要求后，skill 据此生成。",
+  "name": "我的注释体例",
+  "description": "基于默认法学引注手册的定制版本：启用版次归位、改作者分隔符",
+  "rules": {
+    "edition": true,
+    "translator": true
+  },
+  "conventions": {
+    "author_separator": "：",
+    "page_prefix": "第",
+    "page_suffix": "页",
+    "page_range_separator": "-",
+    "english_journal_abbrev": false
+  },
+  "categories": {
+    "book": {
+      "name": "图书",
+      "template": "作者：《书名》（第N版），出版社YYYY年版，第N页。"
+    }
+  }
+}
