@@ -69,10 +69,12 @@ python scripts/run_pipeline.py --input 论文.docx --via-markdown --rules 我的
 
 Full skill definition, scripts, and references are in [SKILL.md](./SKILL.md). See SKILL.md for complete formatting rules, trigger keywords, and error handling details.
 
-**版本与同步 (唯一事实源)**: 本目录 (~/.claude) 是 git 主仓库,
-`~/.workbuddy/skills/chinese-paper-format-skill` 是单向同步的备用目录 (无 git, 禁止直接改)。
+**版本与同步 (唯一事实源)**: 本目录 (~/.claude) 是 git 主仓库;
+`~/.workbuddy/skills/chinese-paper-format-skill` 是**实验沙盒** (无 git) —
+允许在其中单独修改与测试 (如 WorkBuddy 平台适配), **不直接影响主仓库**。
 每次 `git commit` 由 post-commit hook 自动调用 `sync_to_workbuddy.py --apply --quiet`
-同步; 也可手动 `python sync_to_workbuddy.py` (dry-run) / `--apply` (执行)。
+同步; **冲突保护**: 备用目录中「本地修改过/本地新增」的文件会被跳过不覆盖,
+主仓库更新仍正常传播到未改动文件。需完全对齐时 `python sync_to_workbuddy.py --apply --force`。
 
 ## Files
 

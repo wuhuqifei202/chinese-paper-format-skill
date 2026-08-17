@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""单向同步 skill 到 WorkBuddy 备用目录 (主仓库 → 备用).
+"""单向同步 skill 到 WorkBuddy 备用目录 (主仓库 → 实验沙盒).
 
-主仓库: 本脚本所在目录 (~/.claude/skills/chinese-paper-format-skill, git)
-备用:   ~/.workbuddy/skills/chinese-paper-format-skill (无 git, 仅部署)
+主仓库: 本脚本所在目录 (~/.claude/skills/chinese-paper-format-skill, git, 唯一事实源)
+备用:   ~/.workbuddy/skills/chinese-paper-format-skill (无 git, 实验沙盒)
 
 用法:
     python sync_to_workbuddy.py            # dry-run: 打印同步计划, 不改动
-    python sync_to_workbuddy.py --apply    # 执行同步
+    python sync_to_workbuddy.py --apply    # 执行同步 (保护本地修改/新增)
+    python sync_to_workbuddy.py --force    # 忽略保护, 完全对齐 (与 --apply 组合)
     python sync_to_workbuddy.py --apply --quiet   # 无输出 (供 post-commit hook 调用)
 
-设计原则:
-    - 单向: 主仓库是唯一事实源, 备用目录只被覆盖. 禁止在备用目录直接修改.
-    - 删除策略: 备用目录中主仓库没有的文件会被删除 (排除项除外),
-      保证备用目录与主仓库完全一致. 旧版 sync_to_claude.py (反向脚本) 在此规则下自动清除.
-    - 排除项: .git*, __pycache__, .pytest_cache, *.old, *.pyc, logs/, 本脚本自身.
+冲突保护 (实验沙盒语义):
+    备用目录允许单独修改与测试, 不直接影响主仓库 (同步永远是主仓库 → 备用).
+    同步时:
+      - 备用中「比主仓库新」的文件 (本地修改过) → 跳过, 警告, 不覆盖
+      - 备用中「主仓库没有」的文件 (本地新增, 实验产物) → 跳过, 警告, 不删除
+      - 其余差异 (主仓库后改/新增) → 正常覆盖/复制
+    判定依据: mtime (shutil.copy2 保留 mtime, 故「后改」即「本地改」).
+    需要完全对齐时用 --force (覆盖/删除全部差异).
 """
 
 import argparse
@@ -26,6 +30,9 @@ from pathlib import Path
 # 主仓库根目录 = 本脚本所在目录
 SOURCE = Path(os.path.dirname(os.path.abspath(__file__)))
 TARGET = Path.home() / '.workbuddy' / 'skills' / SOURCE.name
+
+# mtime 比较容差 (秒): 两文件 mtime 差在此范围内视为同时
+_MTIME_EPS = 0.5
 
 # 排除规则: 目录名 / 文件名 / 文件名后缀
 EXCLUDED_DIR_NAMES = {'.git', '__pycache__', '.pytest_cache', 'logs'}
@@ -64,7 +71,12 @@ def collect_files(root: Path):
     return sorted(files)
 
 
-def sync(dry_run: bool, quiet: bool):
+def is_locally_modified(src: Path, dst: Path) -> bool:
+    """备用目录文件是否被本地修改过 (备用 mtime 比主仓库新)."""
+    return dst.stat().st_mtime > src.stat().st_mtime + _MTIME_EPS
+
+
+def sync(dry_run: bool, quiet: bool, force: bool):
     if not TARGET.exists():
         print(f'错误: 备用目录不存在: {TARGET}', file=sys.stderr)
         print(f'提示: 请先运行 install.sh 安装到 workbuddy, 或手动创建该目录。',
@@ -74,7 +86,7 @@ def sync(dry_run: bool, quiet: bool):
     source_files = collect_files(SOURCE)
     target_files = collect_files(TARGET)
 
-    plan = []  # (action, rel)
+    plan = []  # (action, rel)  action: + 复制, ~ 覆盖, - 删除, P~ 保护(跳过覆盖), P- 保护(跳过删除)
     # 复制/更新
     for rel in source_files:
         src = SOURCE / rel
@@ -82,18 +94,32 @@ def sync(dry_run: bool, quiet: bool):
         if not dst.exists():
             plan.append(('+', rel))
         elif not filecmp.cmp(src, dst, shallow=False):
-            plan.append(('~', rel))
-    # 删除目标中多余文件 (如旧版反向脚本 sync_to_claude.py)
+            if not force and is_locally_modified(src, dst):
+                plan.append(('P~', rel))  # 备用后改 → 本地实验, 保护
+            else:
+                plan.append(('~', rel))
+    # 删除目标中多余文件 (本地新增的实验产物默认保护)
     for rel in target_files:
         if rel not in source_files:
-            plan.append(('-', rel))
+            if force:
+                plan.append(('-', rel))
+            else:
+                plan.append(('P-', rel))
 
     if dry_run:
-        print(f'同步计划 (dry-run): {len(plan)} 项')
+        print(f'同步计划 (dry-run): {len(plan)} 项'
+              + (', --force 完全对齐' if force else ', 本地修改/新增已保护'))
         for action, rel in plan:
-            print(f'  {action} {rel}')
+            if action == 'P~':
+                print(f'  ⚠ 保护(本地修改, 跳过覆盖) {rel}')
+            elif action == 'P-':
+                print(f'  ⚠ 保护(本地新增, 跳过删除) {rel}')
+            else:
+                print(f'  {action} {rel}')
         print(f'\n源:     {SOURCE} (主仓库)')
-        print(f'目标:   {TARGET} (备用)')
+        print(f'目标:   {TARGET} (实验沙盒)')
+        if not force:
+            print('提示: 用 --force 忽略保护, 完全对齐')
         return
 
     if not plan:
@@ -102,9 +128,16 @@ def sync(dry_run: bool, quiet: bool):
         return
 
     n = 0
+    protected = 0
     for action, rel in plan:
         src = SOURCE / rel
         dst = TARGET / rel
+        if action in ('P~', 'P-'):
+            protected += 1
+            if not quiet:
+                hint = '本地修改, 跳过覆盖' if action == 'P~' else '本地新增, 跳过删除'
+                print(f'跳过({hint}): {rel}')
+            continue
         if action == '-':
             if not quiet:
                 print(f'删除 {rel}')
@@ -119,17 +152,20 @@ def sync(dry_run: bool, quiet: bool):
             shutil.copy2(src, dst)
         n += 1
     if not quiet:
-        print(f'同步完成: {n} 项 → {TARGET}')
+        tail = f' (保护 {protected} 项本地改动)' if protected else ''
+        print(f'同步完成: {n} 项 → {TARGET}{tail}')
 
 
 def main():
-    ap = argparse.ArgumentParser(description='同步 skill 主仓库 → WorkBuddy 备用目录')
+    ap = argparse.ArgumentParser(description='同步 skill 主仓库 → WorkBuddy 实验沙盒')
     ap.add_argument('--apply', action='store_true',
                     help='执行同步 (默认仅打印计划)')
+    ap.add_argument('--force', action='store_true',
+                    help='忽略冲突保护, 完全对齐 (含本地修改/新增)')
     ap.add_argument('--quiet', action='store_true',
                     help='无输出 (与 --apply 组合, 供 post-commit hook)')
     args = ap.parse_args()
-    sync(dry_run=not args.apply, quiet=args.quiet)
+    sync(dry_run=not args.apply, quiet=args.quiet, force=args.force)
 
 
 if __name__ == '__main__':

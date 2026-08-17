@@ -118,17 +118,18 @@ markdown mode.
 ## Development & Sync (唯一事实源)
 
 **主仓库**: `~/.claude/skills/chinese-paper-format-skill` (git 仓库, 唯一事实源)。
-**备用目录**: `~/.workbuddy/skills/chinese-paper-format-skill` — 由主仓库单向同步,
-**禁止直接在备用目录修改或提交** (该目录无 git 仓库, 曾因双仓分叉导致功能落后)。
+**实验沙盒**: `~/.workbuddy/skills/chinese-paper-format-skill` (无 git) — **允许在其中
+单独修改与测试, 不直接影响主仓库**; 同步永远是主仓库 → 沙盒的单向方向。
 
-同步机制:
-- `python sync_to_workbuddy.py` — dry-run 预览同步计划
-- `python sync_to_workbuddy.py --apply` — 执行同步 (复制/更新/删除目标中多余文件,
-  排除 `.git*` / `__pycache__` / `.pytest_cache` / `*.old` / `*.pyc` / 本脚本自身)
-- **post-commit hook**: 每次 `git commit` 后自动同步, 无需手动操作
+同步机制 (冲突保护):
+- `python sync_to_workbuddy.py` — dry-run 预览同步计划 (含受保护项)
+- `python sync_to_workbuddy.py --apply` — 执行同步; **沙盒中「本地修改过」的文件跳过
+  不覆盖, 「本地新增」的文件跳过不删除** (判定依据 mtime: copy2 保留 mtime, 后改即本地改)
+- `python sync_to_workbuddy.py --apply --force` — 忽略保护, 完全对齐
+- **post-commit hook**: 每次 `git commit` 后自动同步 (带冲突保护), 无需手动操作
 
-开发流程: 改主仓库 → `git commit` → (hook 自动同步) → 备用目录即更新。
-新增/改名文件后若目标中出现被误删除的文件, 以主仓库 git 历史为准恢复。
+开发流程: 改主仓库 → `git commit` → (hook 自动同步, 不破坏沙盒实验) → 沙盒更新。
+沙盒实验改动不会流回主仓库; 实验验证通过后手动合并到主仓库再提交。
 
 ## Troubleshooting
 
