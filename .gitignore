@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 *.pyo
 .env
+# 脱敏版旧 git 历史归档 (无功能作用, 仅备份)
+.git.bak

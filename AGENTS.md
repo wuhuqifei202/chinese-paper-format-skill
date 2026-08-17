@@ -69,10 +69,10 @@ python scripts/run_pipeline.py --input 论文.docx --via-markdown --rules 我的
 
 Full skill definition, scripts, and references are in [SKILL.md](./SKILL.md). See SKILL.md for complete formatting rules, trigger keywords, and error handling details.
 
-**版本与同步 (唯一事实源)**: 本目录 (~/.workbuddy) 是 git 主仓库,
-`.claude/skills/chinese-paper-format-skill` 是单向同步的部署目录 (无 git, 禁止直接改)。
-每次 `git commit` 由 post-commit hook 自动调用 `sync_to_claude.py --apply --quiet`
-同步; 也可手动 `python sync_to_claude.py` (dry-run) / `--apply` (执行)。
+**版本与同步 (唯一事实源)**: 本目录 (~/.claude) 是 git 主仓库,
+`~/.workbuddy/skills/chinese-paper-format-skill` 是单向同步的备用目录 (无 git, 禁止直接改)。
+每次 `git commit` 由 post-commit hook 自动调用 `sync_to_workbuddy.py --apply --quiet`
+同步; 也可手动 `python sync_to_workbuddy.py` (dry-run) / `--apply` (执行)。
 
 ## Files
 
@@ -92,4 +92,4 @@ Full skill definition, scripts, and references are in [SKILL.md](./SKILL.md). Se
 - `requirements.txt` — Python dependencies
 - `README.md` — Multi-platform installation
 - `install.sh` — Cross-platform installer
-- `sync_to_claude.py` — 单向同步到 .claude 部署目录 (post-commit hook 自动调用; 不随部署复制)
+- `sync_to_workbuddy.py` — 单向同步到 ~/.workbuddy 备用目录 (post-commit hook 自动调用; 不随同步复制)
